@@ -1,0 +1,275 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false) @map("is_online")
+  scope         String?
+  expires       DateTime?
+  accessToken   String    @map("access_token")
+  userId        BigInt?   @map("user_id")
+  firstName     String?   @map("first_name")
+  lastName      String?   @map("last_name")
+  email         String?
+  accountOwner  Boolean   @default(false) @map("account_owner")
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false) @map("email_verified")
+  refreshToken        String? @map("refresh_token")
+  refreshTokenExpires DateTime? @map("refresh_token_expires")
+
+  @@map("session")
+}
+
+model Shop {
+  id               String    @id
+  name             String?
+  email            String?
+  domain           String?
+  plan             String    @default("Free")
+  status           String    @default("ACTIVE") // ACTIVE, TRIAL, SUSPENDED
+  subscriptionStatus String? @default("ACTIVE") // ACTIVE, TRIALING, PAST_DUE, CANCELED
+  isActive         Boolean   @default(true) @map("is_active")
+  b2bEnabled       Boolean   @default(false) @map("b2b_enabled")
+  maxRowLimit      Int       @default(1000) @map("max_row_limit")
+  displayGbLimit   Float     @default(5.0) @map("display_gb_limit")
+  installedAt      DateTime  @default(now()) @map("installed_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  priceLists       PriceList[]
+
+  @@map("shop")
+}
+
+model PriceList {
+  id          String   @id @default(cuid())
+  shopId      String   @map("shop_id")
+  shop        Shop     @relation(fields: [shopId], references: [id])
+  name        String
+  customerTag String   @map("customer_tag")
+  category    String   @default("WHOLESALE") @map("category") // 'TIER' or 'WHOLESALE'
+  items       PriceListItem[]
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("price_list")
+}
+
+model CustomerTag {
+  id          String   @id @default(cuid())
+  shopId      String
+  name        String
+  tag         String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("customer_tags")
+}
+
+model PriceListItem {
+  id           String    @id @default(cuid())
+  priceListId  String    @map("price_list_id")
+  priceList    PriceList @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  productId    String?   @map("product_id")
+  collectionId String?   @map("collection_id")
+  variantId    String?   @map("variant_id")
+  minQuantity  Int       @default(1) @map("min_quantity")
+  discountType String    @default("FIXED_PRICE") @map("discount_type") // FIXED_PRICE or PERCENTAGE
+  price        Float     // Store the fixed price or the percentage value
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@index([productId])
+  @@index([collectionId])
+  @@index([variantId])
+  @@map("price_list_item")
+}
+model CartDiscount {
+  id              String   @id @default(cuid())
+  shopId          String
+  name            String
+  discountType    String   // 'percentage' or 'fixed_amount'
+  value           Float
+  minSubtotal     Float?   // Minimum order value to apply
+  minQuantity     Int?     // Minimum total items to apply
+  status          String   @default("active")
+  customerTag     String?  // Apply discount only for these tags
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+model CheckoutRule {
+  id              String   @id @default(cuid())
+  shopId          String
+  name            String
+  type            String   @default("CHECKOUT_RULE") // 'CHECKOUT_RULE' or 'CHECKOUT_VALIDATION'
+  ruleType        String?  // 'HIDE_SHIPPING' or 'HIDE_PAYMENT'
+  targetMethods   String?  // Comma separated list of methods
+  customerTag     String?
+  minSubtotal     Float?
+  status          String   @default("active")
+  matchType       String   @default("ANY")
+  conditions      String?  @db.Text
+  errorMessage    String?  @db.Text // New field for validation rules
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model RegistrationForm {
+  id              String   @id @default(cuid())
+  shopId          String
+  name            String
+  autoApprove     Boolean  @default(false)
+  customerTags    String?
+  fields          String   // JSON string of fields
+  status          String   @default("active")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model FormSubmission {
+  id              String   @id @default(cuid())
+  shopId          String
+  formId          String
+  formData        String   // JSON string of submitted data
+  customerEmail   String
+  status          String   @default("pending") // pending, approved, rejected
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model EmailTemplate {
+  id          String   @id @default(uuid())
+  shopId      String
+  type        String   // "ADMIN_NEW_APP", "CUSTOMER_PENDING", "CUSTOMER_APPROVED", "CUSTOMER_REJECTED"
+  isActive    Boolean  @default(true)
+  subject     String
+  body        String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([shopId, type])
+}
+
+model QuickOrderForm {
+  id        String   @id @default(cuid())
+  shopId    String
+  title     String
+  status    String   @default("active")
+  settings  String?  @db.Text // JSON: {colors, border}
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model OrderLimit {
+  id           String   @id @default(cuid())
+  shopId       String
+  label        String
+  status       String   @default("enabled")
+  customerType String   @default("all") // 'all', 'logged_in', 'tagged'
+  customerTag  String?
+  matchType    String   @default("ANY")
+  conditions   String?  @db.Text // JSON: [{target, type, min, max}]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model AutoOrderTag {
+  id              String   @id @default(cuid())
+  shopId          String   @unique
+  enableAutoTag   Boolean  @default(false)
+  enableWarehouse Boolean  @default(false)
+  enableBrand     Boolean  @default(false)
+  customRules     String?  @db.Text // JSON for extra metafield rules
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model AdminUser {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      String   @default("ADMIN") // SUPER_ADMIN, ADMIN, SUPPORT
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AppPlan {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  price       Float    @default(0.0)
+  currency    String   @default("USD")
+  interval    String   @default("EVERY_30_DAYS") // EVERY_30_DAYS, ANNUAL
+  features    String?  @db.Text // JSON array of features
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model AppConfig {
+  id        String   @id @default("global") // Single row config
+  settings  String   @db.Text // JSON object for multiple configs
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+}
+
+model ActivityLog {
+  id           String   @id @default(cuid())
+  shopId       String
+  action       String   // "API_REQUEST", "LOGIN", "PLAN_CHANGE", etc.
+  method       String?
+  path         String?
+  statusCode   Int?
+  requestData  String?  @db.Text
+  responseData String?  @db.Text
+  duration     Int?
+  ip           String?
+  createdAt    DateTime @default(now())
+
+  @@index([shopId])
+  @@index([createdAt])
+  @@map("activity_log")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  adminId   String
+  action    String
+  resource  String
+  details   String?  @db.Text
+  createdAt DateTime @default(now())
+}
+
+model SupportTicket {
+  id          String   @id @default(cuid())
+  shopId      String
+  subject     String
+  description String   @db.Text
+  status      String   @default("open") // open, in_progress, closed
+  priority    String   @default("normal") // low, normal, high
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  shopId    String
+  title     String
+  message   String   @db.Text
+  type      String   @default("info") // info, warning, success
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+}

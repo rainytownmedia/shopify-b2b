@@ -1,0 +1,7 @@
+api_version = "2024-04"
+
+[[extensions]]
+name = "Wholesale Price"
+handle = "wholesale-price-block"
+uid = "6ed4ba8d-f1b8-bc28-1e39-d988b2c3664686940e91"
+type = "theme"

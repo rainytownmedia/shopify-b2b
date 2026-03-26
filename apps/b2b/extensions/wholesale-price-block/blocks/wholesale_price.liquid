@@ -1,0 +1,97 @@
+<div id="b2b-pricing-wrapper" style="display: none; margin: 15px 0;">
+  <!-- Wholesale Exclusive Price -->
+  <div id="wholesale-price-container" style="display: none; padding: 15px; border: 2px dashed #008060; border-radius: 8px; background-color: #f6fdf9; margin-bottom: 10px;">
+    <span style="display: block; font-size: 0.9em; color: #008060; font-weight: bold; text-transform: uppercase; margin-bottom: 5px;">
+      Exclusive Wholesale Price
+    </span>
+    <span id="wholesale-price-value" style="font-size: 1.5em; color: #008060; font-weight: 800;"></span>
+    <p id="wholesale-price-tag" style="margin: 5px 0 0; font-size: 0.8em; color: #666;"></p>
+  </div>
+
+  <!-- Tier Pricing Table -->
+  <div id="tier-pricing-container" style="display: none; padding: 15px; border: 1px solid #e1e1e1; border-radius: 8px; background-color: #ffffff;">
+    <span style="display: block; font-size: 0.9em; color: #202223; font-weight: bold; text-transform: uppercase; margin-bottom: 10px;">
+      Volume Discounts (Tier Pricing)
+    </span>
+    <div id="tier-pricing-table"></div>
+  </div>
+</div>
+
+<script>
+  async function fetchWholesalePrice() {
+    const customerTags = "{{ customer.tags | join: ',' }}";
+    if (!customerTags) return;
+
+    const productId = "gid://shopify/Product/{{ product.id }}";
+    const collectionIds = [{% for collection in product.collections %}"gid://shopify/Collection/{{ collection.id }}"{% unless forloop.last %},{% endunless %}{% endfor %}];
+    const shop = "{{ shop.permanent_domain }}";
+    
+    // Call the App Proxy with collection IDs
+    const response = await fetch(`/apps/b2b-proxy/api/proxy?product_id=${encodeURIComponent(productId)}&collection_ids=${encodeURIComponent(collectionIds.join(','))}&tags=${encodeURIComponent(customerTags)}&shop=${shop}`);
+    const data = await response.json();
+
+    if (data.hasWholesalePrice) {
+      const wrapper = document.getElementById('b2b-pricing-wrapper');
+      wrapper.style.display = 'block';
+
+      // Ensure variant matches if needed, but for now we apply generally if available
+      
+      // 1. Handle Wholesale Rules
+      if (data.wholesaleRules && data.wholesaleRules.length > 0) {
+        const wsContainer = document.getElementById('wholesale-price-container');
+        const priceValue = document.getElementById('wholesale-price-value');
+        const priceTag = document.getElementById('wholesale-price-tag');
+
+        // Sort by quantity, take the best/first one as the main display
+        const wsRules = data.wholesaleRules.sort((a, b) => a.minQuantity - b.minQuantity);
+        const firstRule = wsRules[0];
+        
+        const formattedPrice = new Intl.NumberFormat('en-US', { style: 'currency', currency: '{{ shop.currency }}' }).format(firstRule.price);
+        priceValue.innerText = formattedPrice;
+        priceTag.innerHTML = `Applied for customer group: <strong>${firstRule.tag}</strong> (Min Qty: ${firstRule.minQuantity})`;
+        
+        wsContainer.style.display = 'block';
+      }
+
+      // 2. Handle Tier Rules
+      if (data.tierRules && data.tierRules.length > 0) {
+        const tierContainer = document.getElementById('tier-pricing-container');
+        const tierTableDiv = document.getElementById('tier-pricing-table');
+
+        // Sort rules by quantity ascending
+        const tRules = data.tierRules.sort((a, b) => a.minQuantity - b.minQuantity);
+        
+        let tierHtml = '<table style="width:100%; text-align:left; border-collapse: collapse; font-size: 0.9em;">';
+        tierHtml += '<tr style="border-bottom: 1px solid #eee;">';
+        tierHtml += '<th style="padding: 8px 0; color: #555;">Buy Quantity</th>';
+        tierHtml += '<th style="padding: 8px 0; color: #555;">Price/ea</th>';
+        tierHtml += '</tr>';
+        
+        tRules.forEach(rule => {
+            const p = new Intl.NumberFormat('en-US', { style: 'currency', currency: '{{ shop.currency }}' }).format(rule.price);
+            tierHtml += `<tr style="border-bottom: 1px solid #f9f9f9;">`;
+            tierHtml += `<td style="padding: 8px 0;"><strong>${rule.minQuantity}+</strong> items</td>`;
+            tierHtml += `<td style="padding: 8px 0;">${p}</td>`;
+            tierHtml += `</tr>`;
+        });
+        tierHtml += '</table>';
+        
+        tierTableDiv.innerHTML = tierHtml;
+        tierContainer.style.display = 'block';
+      }
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', fetchWholesalePrice);
+</script>
+
+{% schema %}
+{
+  "name": "Wholesale Price",
+  "target": "section",
+  "enabled_on": {
+    "templates": ["product"]
+  },
+  "settings": []
+}
+{% endschema %}
