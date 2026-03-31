@@ -1,6 +1,6 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "7c3f585bb2d1c02d2dbd93c4a646ada9"
+client_id = "98d10bd0816c87c473c435a67589c93c"
 name = "Rainytownmedia Wholesale"
 application_url = "https://sb2b.rainytownmedia.com"
 embedded = true
@@ -30,7 +30,7 @@ api_version = "2026-04"
 scopes = "write_metaobject_definitions,write_metaobjects,write_products,read_products,read_customers,write_customers,read_orders,write_orders"
 
 [auth]
-redirect_urls = [ "https://sb2b.rainytownmedia.com/api/auth" ]
+redirect_urls = [ "https://sb2b.rainytownmedia.com/auth/callback" ]
 
 [product.metafields.app.demo_info]
 type = "single_line_text_field"

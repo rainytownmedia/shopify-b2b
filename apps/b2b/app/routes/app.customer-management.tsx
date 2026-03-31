@@ -9,7 +9,7 @@ import { Breadcrumbs } from "../components/Breadcrumbs";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
-  
+  console.log("DEBUG - Current Session Scopes:", session.scope);
   // Search from URL
   const url = new URL(request.url);
   const searchTerm = url.searchParams.get("query") || "";
