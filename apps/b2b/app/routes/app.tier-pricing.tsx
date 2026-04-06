@@ -179,6 +179,56 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           data: savedRules
         })
       ]);
+
+      // --- SYNC TO SHOPIFY METAFIELDS ---
+      // Fetch all rules for this product to keep the Metafield complete
+      const allProductRules = await db.priceListItem.findMany({
+          where: { productId },
+          include: { priceList: true }
+      });
+      
+      const metafieldData = allProductRules.map(r => ({
+          tag: r.priceList.customerTag,
+          category: r.priceList.category,
+          variantId: r.variantId,
+          minQuantity: r.minQuantity,
+          discountType: r.discountType,
+          price: parseFloat(r.price.toString()),
+      }));
+
+      const { admin } = await authenticate.admin(request);
+      
+      const mfResponse = await admin.graphql(
+        `#graphql
+        mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
+          metafieldsSet(metafields: $metafields) {
+            userErrors {
+              field
+              message
+            }
+          }
+        }`,
+        {
+          variables: {
+            "metafields": [
+              {
+                "ownerId": productId,
+                "namespace": "b2b_app",
+                "key": "tier_rules",
+                "type": "json",
+                "value": JSON.stringify(metafieldData)
+              }
+            ]
+          }
+        }
+      );
+      
+      const mfData = await mfResponse.json();
+      if (mfData.data?.metafieldsSet?.userErrors?.length > 0) {
+          console.error("Metafield Sync Error:", mfData.data.metafieldsSet.userErrors);
+          return { error: "Rules saved but failed to sync to Shopify Functions." };
+      }
+      // ----------------------------------
     } else if (actionType === "createGroup") {
       await db.priceList.create({
         data: { shopId: session.shop, name: formData.get("name") as string, customerTag: formData.get("tag") as string, category: "TIER" }

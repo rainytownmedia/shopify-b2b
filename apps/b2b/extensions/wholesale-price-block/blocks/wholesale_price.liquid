@@ -18,71 +18,210 @@
 </div>
 
 <script>
-  async function fetchWholesalePrice() {
-    const customerTags = "{{ customer.tags | join: ',' }}";
-    if (!customerTags) return;
+  let b2bData = null;
+  let themePriceElement = null;
+  let quantityInput = null;
+  let originalPriceHtml = null;
 
-    const productId = "gid://shopify/Product/{{ product.id }}";
-    const collectionIds = [{% for collection in product.collections %}"gid://shopify/Collection/{{ collection.id }}"{% unless forloop.last %},{% endunless %}{% endfor %}];
-    const shop = "{{ shop.permanent_domain }}";
+  function formatMoney(amount) {
+    return new Intl.NumberFormat('en-US', { 
+      style: 'currency', 
+      currency: '{{ shop.currency }}' 
+    }).format(amount);
+  }
+
+  function getCalculatedPrice(basePrice, rule) {
+    if (rule.discountType === 'PERCENTAGE') {
+      return basePrice * (1 - parseFloat(rule.price) / 100);
+    }
+    return parseFloat(rule.price);
+  }
+
+  // --- AUTO DETECT HEURISTICS ---
+  function findThemePriceElement(currentTextPrice) {
+    // Priority 1: Common CSS selectors for Dawn, Impulse, Prestige, etc.
+    const commonSelectors = [
+      '.price-item--regular',
+      '.product__price .price',
+      '.price--large .price-item--regular',
+      '.product-single__price',
+      '.current_price',
+      '[data-product-price]'
+    ];
     
-    // Call the App Proxy with collection IDs
-    const response = await fetch(`/apps/b2b-proxy/api/proxy?product_id=${encodeURIComponent(productId)}&collection_ids=${encodeURIComponent(collectionIds.join(','))}&tags=${encodeURIComponent(customerTags)}&shop=${shop}`);
-    const data = await response.json();
+    for (const selector of commonSelectors) {
+      const el = document.querySelector(selector);
+      if (el && el.innerText.trim().length > 0) return el;
+    }
 
-    if (data.hasWholesalePrice) {
-      const wrapper = document.getElementById('b2b-pricing-wrapper');
-      wrapper.style.display = 'block';
-
-      // Ensure variant matches if needed, but for now we apply generally if available
-      
-      // 1. Handle Wholesale Rules
-      if (data.wholesaleRules && data.wholesaleRules.length > 0) {
-        const wsContainer = document.getElementById('wholesale-price-container');
-        const priceValue = document.getElementById('wholesale-price-value');
-        const priceTag = document.getElementById('wholesale-price-tag');
-
-        // Sort by quantity, take the best/first one as the main display
-        const wsRules = data.wholesaleRules.sort((a, b) => a.minQuantity - b.minQuantity);
-        const firstRule = wsRules[0];
-        
-        const formattedPrice = new Intl.NumberFormat('en-US', { style: 'currency', currency: '{{ shop.currency }}' }).format(firstRule.price);
-        priceValue.innerText = formattedPrice;
-        priceTag.innerHTML = `Applied for customer group: <strong>${firstRule.tag}</strong> (Min Qty: ${firstRule.minQuantity})`;
-        
-        wsContainer.style.display = 'block';
+    // Priority 2: Scan document based on text content
+    const elements = document.querySelectorAll('span, div, p');
+    for (const el of Array.from(elements)) {
+      if (el.children.length === 0 && el.innerText.includes(currentTextPrice)) {
+        if (el.className.toLowerCase().includes('price') || el.className.toLowerCase().includes('money')) {
+          return el;
+        }
       }
+    }
+    return null;
+  }
 
-      // 2. Handle Tier Rules
-      if (data.tierRules && data.tierRules.length > 0) {
-        const tierContainer = document.getElementById('tier-pricing-container');
-        const tierTableDiv = document.getElementById('tier-pricing-table');
-
-        // Sort rules by quantity ascending
-        const tRules = data.tierRules.sort((a, b) => a.minQuantity - b.minQuantity);
-        
-        let tierHtml = '<table style="width:100%; text-align:left; border-collapse: collapse; font-size: 0.9em;">';
-        tierHtml += '<tr style="border-bottom: 1px solid #eee;">';
-        tierHtml += '<th style="padding: 8px 0; color: #555;">Buy Quantity</th>';
-        tierHtml += '<th style="padding: 8px 0; color: #555;">Price/ea</th>';
-        tierHtml += '</tr>';
-        
-        tRules.forEach(rule => {
-            const p = new Intl.NumberFormat('en-US', { style: 'currency', currency: '{{ shop.currency }}' }).format(rule.price);
-            tierHtml += `<tr style="border-bottom: 1px solid #f9f9f9;">`;
-            tierHtml += `<td style="padding: 8px 0;"><strong>${rule.minQuantity}+</strong> items</td>`;
-            tierHtml += `<td style="padding: 8px 0;">${p}</td>`;
-            tierHtml += `</tr>`;
-        });
-        tierHtml += '</table>';
-        
-        tierTableDiv.innerHTML = tierHtml;
-        tierContainer.style.display = 'block';
+  function setupDOMListeners() {
+    // Find quantity input
+    quantityInput = document.querySelector('form[action^="/cart"] input[name="quantity"]') || 
+                    document.querySelector('.quantity__input') ||
+                    document.querySelector('[name="quantity"]');
+    
+    if (quantityInput) {
+      quantityInput.addEventListener('input', () => updatePricingUI(getCurrentVariantId()));
+      quantityInput.addEventListener('change', () => updatePricingUI(getCurrentVariantId()));
+      
+      // Also listen to plus/minus buttons near it
+      const qtyContainer = quantityInput.parentElement;
+      if (qtyContainer) {
+          qtyContainer.addEventListener('click', () => { setTimeout(() => updatePricingUI(getCurrentVariantId()), 50); });
       }
     }
   }
 
-  document.addEventListener('DOMContentLoaded', fetchWholesalePrice);
+  function getCurrentVariantId() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const variantIdFromUrl = urlParams.get('variant');
+      if (variantIdFromUrl) {
+          return `gid://shopify/ProductVariant/${variantIdFromUrl}`;
+      }
+      return "gid://shopify/ProductVariant/{{ product.selected_or_first_available_variant.id }}";
+  }
+
+  function updatePricingUI(variantId) {
+    if (!b2bData || (!b2bData.wholesaleRules.length && !b2bData.tierRules.length)) return;
+
+    const wrapper = document.getElementById('b2b-pricing-wrapper');
+    const wsContainer = document.getElementById('wholesale-price-container');
+    const tierContainer = document.getElementById('tier-pricing-container');
+    const tierTableDiv = document.getElementById('tier-pricing-table');
+
+    wsContainer.style.display = 'none';
+    tierContainer.style.display = 'none';
+    wrapper.style.display = 'none';
+
+    const variants = {
+      {% for variant in product.variants %}
+        "gid://shopify/ProductVariant/{{ variant.id }}": {{ variant.price | divided_by: 100.0 }}{% unless forloop.last %},{% endunless %}
+      {% endfor %}
+    };
+    const currentPrice = variants[variantId] || {{ product.price | divided_by: 100.0 }};
+    
+    // Auto-detect theme price element on first load
+    if (!themePriceElement) {
+        themePriceElement = findThemePriceElement(currentPrice.toString());
+        if (themePriceElement) {
+            originalPriceHtml = themePriceElement.innerHTML; // Vault original
+        }
+    }
+
+    const currentQty = quantityInput ? parseInt(quantityInput.value) || 1 : 1;
+    let hasVisibleRules = false;
+    let bestApplicableRule = null; // The rule that applies to current cart QTY
+
+    // Evaluate Wholesale
+    const wsRules = b2bData.wholesaleRules
+      .filter(r => !r.variantId || r.variantId === variantId)
+      .sort((a, b) => a.minQuantity - b.minQuantity);
+
+    if (wsRules.length > 0) {
+      const firstRule = wsRules[0];
+      const finalPrice = getCalculatedPrice(currentPrice, firstRule);
+      if (currentQty >= firstRule.minQuantity) {
+          bestApplicableRule = { ...firstRule, finalPrice };
+      }
+      document.getElementById('wholesale-price-value').innerText = formatMoney(finalPrice);
+      document.getElementById('wholesale-price-tag').innerHTML = `Applied for customer group: <strong>${firstRule.tag}</strong> (Min Qty: ${firstRule.minQuantity})`;
+      wsContainer.style.display = 'block';
+      hasVisibleRules = true;
+    }
+
+    // Evaluate Tier 
+    const tRules = b2bData.tierRules
+      .filter(r => !r.variantId || r.variantId === variantId)
+      .sort((a, b) => a.minQuantity - b.minQuantity);
+
+    if (tRules.length > 0) {
+      let tierHtml = '<table style="width:100%; text-align:left; border-collapse: collapse; font-size: 0.9em;">';
+      tierHtml += '<tr style="border-bottom: 1px solid #eee;">';
+      tierHtml += '<th style="padding: 8px 0; color: #555;">Buy Quantity</th>';
+      tierHtml += '<th style="padding: 8px 0; color: #555;">Price/ea</th>';
+      tierHtml += '</tr>';
+      
+      tRules.forEach(rule => {
+          const finalPrice = getCalculatedPrice(currentPrice, rule);
+          if (currentQty >= rule.minQuantity) {
+             // Keeps updating to the highest matched minQuantity tier since they are sorted ascending
+             bestApplicableRule = { ...rule, finalPrice };
+          }
+          const isCurrentActive = (bestApplicableRule && bestApplicableRule.minQuantity === rule.minQuantity);
+          
+          tierHtml += `<tr style="border-bottom: 1px solid #f9f9f9; ${isCurrentActive ? 'background:#e3f2fd;' : ''}">`;
+          tierHtml += `<td style="padding: 8px 8px;"><strong>${rule.minQuantity}+</strong> items ${isCurrentActive ? '<span style="color:#1976d2; font-size:0.8em; font-weight:bold;">(Active)</span>' : ''}</td>`;
+          tierHtml += `<td style="padding: 8px 8px;">${formatMoney(finalPrice)}</td>`;
+          tierHtml += `</tr>`;
+      });
+      tierHtml += '</table>';
+      
+      tierTableDiv.innerHTML = tierHtml;
+      tierContainer.style.display = 'block';
+      hasVisibleRules = true;
+    }
+
+    if (hasVisibleRules) {
+      wrapper.style.display = 'block';
+    }
+
+    // 3. OVERRIDE THEME PRICE VISUALLY
+    if (themePriceElement) {
+        if (bestApplicableRule) {
+             // Apply Discount
+             const formattedTotal = formatMoney(bestApplicableRule.finalPrice * currentQty);
+             themePriceElement.innerHTML = `
+                <div style="display: flex; flex-direction: column;">
+                   <span style="color: #d9534f; font-weight: bold; font-size: 1.1em;">${formatMoney(bestApplicableRule.finalPrice)} / ea</span>
+                   <span style="color: #999; font-size: 0.85em;">Total: ${formattedTotal} <del>${formatMoney(currentPrice * currentQty)}</del></span>
+                </div>
+             `;
+        } else {
+             // Revert to original
+             if (originalPriceHtml) {
+                 const formattedTotal = formatMoney(currentPrice * currentQty);
+                 themePriceElement.innerHTML = `
+                    <div style="display: flex; flex-direction: column;">
+                       <span>${originalPriceHtml} / ea</span>
+                       ${currentQty > 1 ? `<span style="font-size: 0.85em; color: #666;">Total: ${formattedTotal}</span>` : ''}
+                    </div>
+                 `;
+             }
+        }
+    }
+  }
+
+  async function initWholesalePrice() {
+    const customerTags = "{{ customer.tags | join: ',' }}";
+    const productId = "gid://shopify/Product/{{ product.id }}";
+    const collectionIds = [{% for collection in product.collections %}"gid://shopify/Collection/{{ collection.id }}"{% unless forloop.last %},{% endunless %}{% endfor %}];
+    const shop = "{{ shop.permanent_domain }}";
+    
+    try {
+      const response = await fetch(`/apps/b2b-proxy/api/proxy?product_id=${encodeURIComponent(productId)}&collection_ids=${encodeURIComponent(collectionIds.join(','))}&tags=${encodeURIComponent(customerTags)}&shop=${shop}`);
+      b2bData = await response.json();
+      
+      setupDOMListeners();
+      updatePricingUI(getCurrentVariantId());
+    } catch (e) {
+      console.error("B2B App Proxy Error:", e);
+    }
+  }
+
+  window.addEventListener('popstate', () => updatePricingUI(getCurrentVariantId()));
+  document.addEventListener('DOMContentLoaded', initWholesalePrice);
 </script>
 
 {% schema %}

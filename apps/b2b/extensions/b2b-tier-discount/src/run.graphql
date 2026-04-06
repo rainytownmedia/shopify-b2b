@@ -1,0 +1,33 @@
+query RunInput {
+  cart {
+    buyerIdentity {
+      customer {
+        id
+        metafield(namespace: "b2b_app", key: "b2b_tags") {
+          value
+        }
+      }
+    }
+    lines {
+      id
+      quantity
+      cost {
+        amountPerQuantity {
+          amount
+        }
+      }
+      merchandise {
+        __typename
+        ... on ProductVariant {
+          id
+          product {
+            id
+            metafield(namespace: "b2b_app", key: "tier_rules") {
+              value
+            }
+          }
+        }
+      }
+    }
+  }
+}
