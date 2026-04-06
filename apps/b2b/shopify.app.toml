@@ -1,6 +1,6 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "98d10bd0816c87c473c435a67589c93c"
+client_id = "7a47c64350b92d852e160a28fd64981a"
 name = "Rainytownmedia B2B"
 application_url = "https://sb2b.rainytownmedia.com"
 embedded = true
@@ -19,3 +19,6 @@ redirect_urls = [
   "https://sb2b.rainytownmedia.com/auth/callback",
   "https://sb2b.rainytownmedia.com/api/auth"
 ]
+
+[build]
+automatically_update_urls_on_dev = true
