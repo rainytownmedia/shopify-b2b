@@ -18,10 +18,46 @@
 </div>
 
 <script>
-  let b2bData = null;
-  let themePriceElement = null;
-  let quantityInput = null;
-  let originalPriceHtml = null;
+  console.log("time 5");
+  
+  // IMMEDIATELY FIND AND HIDE THE ORIGINAL NATIVE PRICE BEFORE BROWSER RENDERS (ANTI-FLICKER AT LOAD)
+  var initialPriceStr = "{{ product.selected_or_first_available_variant.price | divided_by: 100.0 }}";
+  function sysFindThemePrice() {
+      const commonSelectors = ['.price-item--regular', '.product__price .price', '.price--large .price-item--regular', '.product-single__price', '.current_price', '[data-product-price]', '.price'];
+      for (const selector of commonSelectors) {
+          const els = document.querySelectorAll(selector);
+          for (let i = 0; i < els.length; i++) {
+              if (els[i].textContent && els[i].textContent.includes(initialPriceStr)) return els[i];
+          }
+      }
+      const allEls = document.querySelectorAll('span, div, p');
+      for (let i = 0; i < allEls.length; i++) {
+          const el = allEls[i];
+          if (el.children.length === 0 && el.textContent && el.textContent.includes(initialPriceStr)) {
+              if (el.className && typeof el.className === 'string' && (el.className.toLowerCase().includes('price') || el.className.toLowerCase().includes('money'))) {
+                  return el;
+              }
+          }
+      }
+      return null;
+  }
+  
+  var b2bData = window.b2bDataCache || null;
+  var themePriceElement = window.themePriceElement || sysFindThemePrice();
+  
+  if (themePriceElement) {
+      // Force hide it immediately!
+      themePriceElement.style.setProperty('display', 'none', 'important');
+      window.themePriceElement = themePriceElement;
+  }
+
+  var quantityInput = null;
+  var originalPriceHtml = window.originalPriceHtmlVault || null;
+  
+  if (themePriceElement && !originalPriceHtml) {
+      originalPriceHtml = themePriceElement.innerHTML;
+      window.originalPriceHtmlVault = originalPriceHtml;
+  }
 
   function formatMoney(amount) {
     return new Intl.NumberFormat('en-US', { 
@@ -101,9 +137,12 @@
     const tierContainer = document.getElementById('tier-pricing-container');
     const tierTableDiv = document.getElementById('tier-pricing-table');
 
-    wsContainer.style.display = 'none';
-    tierContainer.style.display = 'none';
-    wrapper.style.display = 'none';
+    if (!wrapper || !wsContainer || !tierContainer || !tierTableDiv) return;
+
+    // Remove brief hide to avoid flicker during aggressive polling
+    // wsContainer.style.display = 'none';
+    // tierContainer.style.display = 'none';
+    // wrapper.style.display = 'none';
 
     const variants = {
       {% for variant in product.variants %}
@@ -111,23 +150,33 @@
       {% endfor %}
     };
     const currentPrice = variants[variantId] || {{ product.price | divided_by: 100.0 }};
+    console.log('[B2B-DEBUG] updatePricingUI RUNNING! VariantId:', variantId, 'Price:', currentPrice);
     
-    // Auto-detect theme price element on first load
-    if (!themePriceElement) {
-        themePriceElement = findThemePriceElement(currentPrice.toString());
-        if (themePriceElement) {
-            originalPriceHtml = themePriceElement.innerHTML; // Vault original
+    // Auto-detect theme price element again if wiped by theme JS
+    if (window.themePriceElement && !document.body.contains(window.themePriceElement)) {
+        window.themePriceElement = null; // Reset
+    }
+    
+    if (!window.themePriceElement) {
+        window.themePriceElement = findThemePriceElement(currentPrice.toString());
+        if (window.themePriceElement) {
+            originalPriceHtml = window.themePriceElement.innerHTML;
+            window.originalPriceHtmlVault = originalPriceHtml;
         }
     }
 
     const currentQty = quantityInput ? parseInt(quantityInput.value) || 1 : 1;
     let hasVisibleRules = false;
-    let bestApplicableRule = null; // The rule that applies to current cart QTY
+    let bestApplicableRule = null;
+
+    console.log('[B2B-DEBUG] b2bData snapshot:', b2bData);
 
     // Evaluate Wholesale
     const wsRules = b2bData.wholesaleRules
       .filter(r => !r.variantId || r.variantId === variantId)
       .sort((a, b) => a.minQuantity - b.minQuantity);
+      
+    console.log('[B2B-DEBUG] Filtered Wholesale Rules:', wsRules);
 
     if (wsRules.length > 0) {
       const firstRule = wsRules[0];
@@ -136,15 +185,19 @@
           bestApplicableRule = { ...firstRule, finalPrice };
       }
       document.getElementById('wholesale-price-value').innerText = formatMoney(finalPrice);
-      document.getElementById('wholesale-price-tag').innerHTML = `Applied for customer group: <strong>${firstRule.tag}</strong> (Min Qty: ${firstRule.minQuantity})`;
+      document.getElementById('wholesale-price-tag').innerHTML = `Applied for group: <strong>${firstRule.tag}</strong> (Min Qty: ${firstRule.minQuantity})`;
       wsContainer.style.display = 'block';
       hasVisibleRules = true;
+    } else {
+      wsContainer.style.display = 'none';
     }
 
     // Evaluate Tier 
     const tRules = b2bData.tierRules
       .filter(r => !r.variantId || r.variantId === variantId)
       .sort((a, b) => a.minQuantity - b.minQuantity);
+      
+    console.log('[B2B-DEBUG] Filtered Tier Rules:', tRules);
 
     if (tRules.length > 0) {
       let tierHtml = '<table style="width:100%; text-align:left; border-collapse: collapse; font-size: 0.9em;">';
@@ -171,34 +224,70 @@
       tierTableDiv.innerHTML = tierHtml;
       tierContainer.style.display = 'block';
       hasVisibleRules = true;
+    } else {
+      tierContainer.style.display = 'none';
     }
+
+    console.log('[B2B-DEBUG] hasVisibleRules Result:', hasVisibleRules);
 
     if (hasVisibleRules) {
       wrapper.style.display = 'block';
+    } else {
+      wrapper.style.display = 'none';
+      console.log('[B2B-DEBUG] Hiding wrapper entirely because no rules matched this variant!');
     }
 
-    // 3. OVERRIDE THEME PRICE VISUALLY
-    if (themePriceElement) {
+    // 3. OVERRIDE THEME PRICE VISUALLY (ANTI-FLICKER PROXY STRATEGY)
+    if (window.themePriceElement) {
+        let antiFlicker = document.getElementById('b2b-anti-flicker');
+        let proxyEl = window.themePriceElement.nextElementSibling;
+        if (proxyEl && proxyEl.id !== 'b2b-proxy-price') proxyEl = null;
+
         if (bestApplicableRule) {
-             // Apply Discount
+             // Activate CSS shield to force the Theme's original element to be "Invisible"
+             if (!antiFlicker) {
+                 const section = window.themePriceElement.closest('[id^="shopify-section"]');
+                 const sectionId = section ? `#${section.id}` : '';
+                 const classes = Array.from(window.themePriceElement.classList)
+                      .filter(c => c.trim().length > 0)
+                      .map(c => `.${c}`).join('');
+                 
+                 if (classes) {
+                     antiFlicker = document.createElement('style');
+                     antiFlicker.id = 'b2b-anti-flicker';
+                     document.head.appendChild(antiFlicker);
+                     // Invisibility cloak: Any new Node flushed by the Theme gets display none!
+                     antiFlicker.innerHTML = `${sectionId} ${classes} { display: none !important; }`;
+                 } else {
+                     window.themePriceElement.style.setProperty('display', 'none', 'important');
+                 }
+             } else {
+                 antiFlicker.disabled = false;
+                 // Handle DOM reset case losing inline styles
+                 if (!antiFlicker.innerHTML) window.themePriceElement.style.setProperty('display', 'none', 'important'); 
+             }
+             
+             // Deploy the Proxy Element
+             if (!proxyEl || !document.body.contains(proxyEl)) {
+                 proxyEl = document.createElement('div');
+                 proxyEl.id = 'b2b-proxy-price';
+                 window.themePriceElement.parentNode.insertBefore(proxyEl, window.themePriceElement.nextSibling);
+             }
+             proxyEl.style.display = 'block';
+
              const formattedTotal = formatMoney(bestApplicableRule.finalPrice * currentQty);
-             themePriceElement.innerHTML = `
+             proxyEl.innerHTML = `
                 <div style="display: flex; flex-direction: column;">
                    <span style="color: #d9534f; font-weight: bold; font-size: 1.1em;">${formatMoney(bestApplicableRule.finalPrice)} / ea</span>
                    <span style="color: #999; font-size: 0.85em;">Total: ${formattedTotal} <del>${formatMoney(currentPrice * currentQty)}</del></span>
                 </div>
              `;
         } else {
-             // Revert to original
-             if (originalPriceHtml) {
-                 const formattedTotal = formatMoney(currentPrice * currentQty);
-                 themePriceElement.innerHTML = `
-                    <div style="display: flex; flex-direction: column;">
-                       <span>${originalPriceHtml} / ea</span>
-                       ${currentQty > 1 ? `<span style="font-size: 0.85em; color: #666;">Total: ${formattedTotal}</span>` : ''}
-                    </div>
-                 `;
-             }
+             // Not eligible for discount -> Remove the invisibility cloak and let Theme handle its UI
+             if (antiFlicker) antiFlicker.disabled = true;
+             window.themePriceElement.style.display = '';
+             
+             if (proxyEl) proxyEl.style.display = 'none';
         }
     }
   }
@@ -210,8 +299,11 @@
     const shop = "{{ shop.permanent_domain }}";
     
     try {
-      const response = await fetch(`/apps/b2b-proxy/api/proxy?product_id=${encodeURIComponent(productId)}&collection_ids=${encodeURIComponent(collectionIds.join(','))}&tags=${encodeURIComponent(customerTags)}&shop=${shop}`);
-      b2bData = await response.json();
+      if (!b2bData) {
+          const response = await fetch(`/apps/b2b-proxy/api/proxy?product_id=${encodeURIComponent(productId)}&collection_ids=${encodeURIComponent(collectionIds.join(','))}&tags=${encodeURIComponent(customerTags)}&shop=${shop}`);
+          b2bData = await response.json();
+          window.b2bDataCache = b2bData;
+      }
       
       setupDOMListeners();
       updatePricingUI(getCurrentVariantId());
@@ -221,6 +313,66 @@
   }
 
   window.addEventListener('popstate', () => updatePricingUI(getCurrentVariantId()));
+  
+  // Intercept history to catch Variant changes from Theme JS
+  if (!window.b2bHistoryPatched) {
+      const originalPushState = history.pushState;
+      const originalReplaceState = history.replaceState;
+      function onUrlChange() {
+        // Fast reaction, UI logic applies. Any DOM wiping will be handled by Watchdog/Observer.
+        updatePricingUI(getCurrentVariantId());
+      }
+      history.pushState = function() {
+          originalPushState.apply(this, arguments);
+          onUrlChange();
+      };
+      history.replaceState = function() {
+          originalReplaceState.apply(this, arguments);
+          onUrlChange();
+      };
+      window.b2bHistoryPatched = true;
+  }
+  
+  // --- WATCHDOG: DETECT ELEMENT REPLACEMENT ---
+  if (!window.b2bPriceWatchdog) {
+      window.b2bPriceWatchdog = setInterval(() => {
+          if (document.readyState === 'loading') return;
+          if (window.themePriceElement && !document.body.contains(window.themePriceElement)) {
+              // Log removed for performance to prevent flooding console at 30ms but detecting efficiently
+              window.themePriceElement = null; // Force re-detection
+              updatePricingUI(getCurrentVariantId());
+          }
+      }, 30);
+  }
+  
+  // --- SURVIVE SECTION RENDERING (AJAX DOM REPLACEMENT) ---
+  if (!window.b2bMutationObserver) {
+      window.b2bMutationObserver = new MutationObserver((mutations) => {
+          for (const mutation of mutations) {
+              if (mutation.type === 'childList') {
+                  mutation.addedNodes.forEach(node => {
+                      if (node.nodeType === 1) { // Element
+                          if (node.id === 'b2b-pricing-wrapper' || node.querySelector('#b2b-pricing-wrapper')) {
+                              // If theme wiped our wrapper and inserted a fresh one, re-inject UI!
+                              window.themePriceElement = null; // force redetect
+                              setupDOMListeners(); // re-bind quantity input
+                              updatePricingUI(getCurrentVariantId());
+                          }
+                      }
+                  });
+              }
+          }
+      });
+      window.b2bMutationObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // Listen to generic variant selector inputs as an aggressive fallback
+  setTimeout(() => {
+    document.querySelectorAll('variant-selects, variant-radios, select[name="id"], input[name="id"], input[type="radio"][name^="options"]').forEach(el => {
+       el.addEventListener('change', () => setTimeout(() => updatePricingUI(getCurrentVariantId()), 200));
+    });
+  }, 1000);
+
   document.addEventListener('DOMContentLoaded', initWholesalePrice);
 </script>
 

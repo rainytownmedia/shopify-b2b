@@ -3,7 +3,49 @@ import { useLoaderData, useNavigate } from "react-router";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { admin } = await authenticate.admin(request);
+  
+  // Auto-setup the Discount Function if not already created
+  try {
+     const functionsRes = await admin.graphql(`
+        #graphql
+        query {
+           shopifyFunctions(first: 25) { edges { node { id title apiType } } }
+        }
+     `);
+     const fJson = await functionsRes.json();
+     const b2bFunction = fJson.data?.shopifyFunctions?.edges?.find(
+        (e: any) => e.node.apiType === "product_discounts" || e.node.title.includes("tier-discount") || e.node.title.includes("b2b")
+     )?.node;
+
+     if (b2bFunction) {
+         const existingRes = await admin.graphql(`
+            #graphql
+            query { discountNodes(first: 25) { edges { node { discount { ... on DiscountAutomaticApp { title } } } } } }
+         `);
+         const exJson = await existingRes.json();
+         const alreadyExists = exJson.data?.discountNodes?.edges?.some(
+             (e: any) => e.node.discount?.title === "B2B Tier Discount"
+         );
+
+         if (!alreadyExists) {
+             console.log("Auto-creating B2B Tier Discount Function...");
+             await admin.graphql(`
+                #graphql
+                mutation discountAutomaticAppCreate($automaticAppDiscount: DiscountAutomaticAppInput!) {
+                  discountAutomaticAppCreate(automaticAppDiscount: $automaticAppDiscount) { userErrors { field message } }
+                }
+             `, {
+                 variables: {
+                     automaticAppDiscount: { title: "B2B Tier Discount", functionId: b2bFunction.id, startsAt: new Date().toISOString() }
+                 }
+             });
+         }
+     }
+  } catch (err) {
+     console.error("AutoSetup error:", err);
+  }
+
   return { shop: "Store" };
 };
 
