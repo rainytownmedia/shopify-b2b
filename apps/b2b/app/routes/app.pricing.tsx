@@ -68,7 +68,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     activePlan: activePlanName,
     usage,
     availablePlans: dbPlans,
-    host: url.searchParams.get("host"),
+    host: host,
   };
 };
 
@@ -159,7 +159,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           
           if (!host) {
             console.log("Host missing in request. Attempting to fetch from Database...");
-            const shopData = await db.shop.findUnique({ where: { id: session.shop }, select: { host: true } });
+            const shopData = await db.shop.findUnique({ 
+              where: { id: session.shop }, 
+              select: { host: true } 
+            });
             host = shopData?.host || "";
           }
 
