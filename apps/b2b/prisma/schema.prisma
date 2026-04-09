@@ -42,6 +42,7 @@ model Shop {
   subscriptionStatus String? @default("ACTIVE") // ACTIVE, TRIALING, PAST_DUE, CANCELED
   isActive         Boolean   @default(true) @map("is_active")
   b2bEnabled       Boolean   @default(false) @map("b2b_enabled")
+  host             String?
   maxRowLimit      Int       @default(500) @map("max_row_limit")
   displayGbLimit   Float     @default(5.0) @map("display_gb_limit")
   installedAt      DateTime  @default(now()) @map("installed_at")
