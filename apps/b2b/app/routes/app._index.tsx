@@ -1,9 +1,11 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { useLoaderData, useNavigate } from "react-router";
+import { useLoaderData, useNavigate, useFetcher } from "react-router";
+import { useEffect, useState, useRef } from "react";
 import { authenticate } from "../shopify.server";
+import db from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   
   // Auto-setup the Discount Function if not already created
   try {
@@ -46,15 +48,101 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
      console.error("AutoSetup error:", err);
   }
 
-  return { shop: "Store" };
+  // Check if historical tags sync is needed
+  let needsTagSync = false;
+  const existingLog = await db.activityLog.findFirst({
+      where: { shopId: session.shop, action: "SYNC_ALL_TAGS_COMPLETED" }
+  });
+
+  if (!existingLog) {
+      // Fast check if any customers exist
+      const checkRes = await admin.graphql(`
+        #graphql
+        query {
+            customers(first: 1) { edges { node { id } } }
+        }
+      `);
+      const checkJson = await checkRes.json();
+      if ((checkJson.data as any)?.customers?.edges?.length > 0) {
+          needsTagSync = true;
+      } else {
+          // No customers, mark as completed immediately
+          await db.activityLog.create({
+              data: { shopId: session.shop, action: "SYNC_ALL_TAGS_COMPLETED" }
+          });
+      }
+  }
+
+  return { shop: "Store", needsTagSync };
 };
 
 export default function Dashboard() {
-  const { shop } = useLoaderData<typeof loader>();
+  const { shop, needsTagSync } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
+  const fetcher = useFetcher();
+
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState(0); 
+  const syncedCountRef = useRef(0);
+  const [syncComplete, setSyncComplete] = useState(false);
+
+  // Background Auto-Sync logic
+  useEffect(() => {
+    if (!needsTagSync || syncComplete) return;
+
+    if (!isSyncing && fetcher.state === "idle" && !fetcher.data) {
+        setIsSyncing(true);
+        fetcher.submit({ actionType: "SYNC_CHUNK", cursor: "" }, { method: "POST", action: "/api/admin/sync" });
+    } else if (fetcher.state === "idle" && fetcher.data) {
+        const data = fetcher.data as any;
+        if (data.success) {
+            syncedCountRef.current += data.syncedCount || 0;
+            setSyncProgress((prev) => Math.min(prev + 15, 95)); // rough estimate bump
+
+            if (data.hasNextPage) {
+                // Continue fetching the next chunk
+                fetcher.submit({ actionType: "SYNC_CHUNK", cursor: data.endCursor }, { method: "POST", action: "/api/admin/sync" });
+            } else {
+                // Done!
+                setSyncProgress(100);
+                setTimeout(() => {
+                    setSyncComplete(true);
+                    setIsSyncing(false);
+                }, 1500);
+            }
+        }
+    }
+  }, [needsTagSync, fetcher.state, fetcher.data, isSyncing, syncComplete]);
 
   return (
     <s-page heading="Rainytownmedia Wholesale Dashboard">
+      {/* Onboarding Sync Banner */}
+      {needsTagSync && !syncComplete && (
+        <div style={{
+          background: "white", padding: "20px 25px", borderRadius: "12px", border: "1px solid #73bced", 
+          borderLeft: "4px solid #005bd3", marginBottom: "25px", display: "flex", flexDirection: "column", gap: "15px"
+        }}>
+          <div>
+            <h3 style={{ fontSize: "1.1em", fontWeight: "bold", margin: "0 0 5px 0", display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "1.2em" }}>🔄</span> Syncing Historical Customers...
+            </h3>
+            <p style={{ margin: 0, color: "#6d7175", fontSize: "0.95em" }}>
+              We detected existing customers on your store. We are automatically syncing their B2B data in the background so that they can access wholesale pricing immediately.
+            </p>
+          </div>
+          
+          <div style={{ background: "#f4f6f8", height: "8px", borderRadius: "4px", width: "100%", overflow: "hidden", position: "relative" }}>
+             <div style={{ 
+                height: "100%", background: "#005bd3", borderRadius: "4px", 
+                width: `${syncProgress}%`, transition: "width 0.5s ease" 
+             }}></div>
+          </div>
+          <div style={{ fontSize: "0.85em", color: "#6d7175", textAlign: "right" }}>
+            {syncProgress === 100 ? "Complete!" : `Processing block... (${syncedCountRef.current} synced)`}
+          </div>
+        </div>
+      )}
+
       {/* Welcome Banner */}
       <div style={{
         background: "linear-gradient(135deg, #005bd3 0%, #002e6b 100%)",

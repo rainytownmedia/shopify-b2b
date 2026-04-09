@@ -46,7 +46,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-   const { session } = await authenticate.admin(request);
+   const { session, admin } = await authenticate.admin(request);
    const formData = await request.formData();
    const actionType = formData.get("actionType");
 
@@ -64,6 +64,55 @@ export const action = async ({ request }: ActionFunctionArgs) => {
    } else if (actionType === "deleteRegistrationGroup") {
       const id = formData.get("id") as string;
       await db.priceList.delete({ where: { id } });
+   } else if (actionType === "syncAllTags") {
+      const response = await admin.graphql(
+         `#graphql
+         query getAllCustomers {
+            customers(first: 250) {
+               edges {
+                  node {
+                     id
+                     tags
+                  }
+               }
+            }
+         }`
+      );
+      
+      const customerJson: any = await response.json();
+      const customers = customerJson.data?.customers?.edges || [];
+      
+      const metafields = customers.map((c: any) => {
+         const tags = c.node.tags || [];
+         return {
+            ownerId: c.node.id,
+            namespace: "b2b_app",
+            key: "b2b_tags",
+            type: "json",
+            value: JSON.stringify(tags)
+         };
+      });
+
+      if (metafields.length > 0) {
+         // Batch into groups of 25 to respect mutation limits
+         const chunkSize = 25;
+         for (let i = 0; i < metafields.length; i += chunkSize) {
+            const chunk = metafields.slice(i, i + chunkSize);
+            await admin.graphql(
+               `#graphql
+               mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
+                  metafieldsSet(metafields: $metafields) {
+                     userErrors {
+                        field
+                        message
+                     }
+                  }
+               }`,
+               { variables: { metafields: chunk } }
+            );
+         }
+      }
+      return { success: true, syncedCount: customers.length };
    }
 
    return { success: true };
@@ -129,16 +178,28 @@ export default function CustomerManagementPage() {
                   </div>
                </div>
 
-               <div style={{ background: "white", padding: "20px", borderRadius: "12px", border: "1px solid #ddd", marginBottom: "20px", display: "flex", gap: "10px" }}>
+               <div style={{ background: "white", padding: "20px", borderRadius: "12px", border: "1px solid #ddd", marginBottom: "20px", display: "flex", gap: "10px", alignItems: "center" }}>
                   <input
                      type="text"
                      placeholder="Search by name, email, or tag..."
                      value={search}
                      onChange={e => setSearch(e.target.value)}
                      onKeyDown={e => e.key === "Enter" && handleSearch()}
-                     style={inputStyle}
+                     style={{ ...inputStyle, flex: 1 }}
                   />
                   <s-button variant="primary" onClick={handleSearch}>Search</s-button>
+               </div>
+               
+               <div style={{ marginBottom: "15px", display: "flex", justifyContent: "flex-end" }}>
+                  <s-button 
+                     variant="secondary" 
+                     onClick={() => {
+                        fetcher.submit({ actionType: "syncAllTags" }, { method: "POST" });
+                        shopify.toast.show("Syncing tags to Shopify Functions... Please wait.");
+                     }}
+                  >
+                     🔄 Sync All Tags to Shopify Functions
+                  </s-button>
                </div>
 
                <div style={{ background: "white", borderRadius: "12px", border: "1px solid #ddd", overflow: "hidden" }}>

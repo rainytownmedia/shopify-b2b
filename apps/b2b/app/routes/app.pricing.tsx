@@ -5,6 +5,7 @@ import { authenticate } from "../shopify.server";
 import { checkUsage } from "../utils/quota.server";
 import db from "../db.server";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import { PLANS, PLAN_FREE, PLAN_PRO, PLAN_UNLIMITED } from "../config/plans.config";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, billing } = await authenticate.admin(request);
@@ -33,20 +34,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Sync / Grandfathering logic
   const shopData = await db.shop.findUnique({ where: { id: session.shop } });
   if (shopData && shopData.plan !== activePlanName) {
-    // Dynamic limit logic based on DB description or defaults
-    let expectedRowLimit = 1000;
-    let expectedGbLimit = 5.0;
+    // Dynamic limit logic based on centralized config
+    let expectedRowLimit = PLANS[PLAN_FREE].maxRowLimit;
+    let expectedGbLimit = PLANS[PLAN_FREE].displayGbLimit;
 
     if (currentPlanDetails) {
-       // Extract limits from features or description if possible, or use defaults
-       // For this implementation, we'll use price thresholds as defaults
-       if (currentPlanDetails.price >= 50) {
-          expectedRowLimit = 999999999;
-          expectedGbLimit = 9999.0;
-       } else if (currentPlanDetails.price >= 20) {
-          expectedRowLimit = 2000;
-          expectedGbLimit = 10.0;
-       }
+        const config = PLANS[currentPlanDetails.name];
+        if (config) {
+            expectedRowLimit = config.maxRowLimit;
+            expectedGbLimit = config.displayGbLimit;
+        }
     }
 
     await db.shop.update({
@@ -65,35 +62,91 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { billing } = await authenticate.admin(request);
+  const { session, billing, admin } = await authenticate.admin(request);
   const formData = await request.formData();
   const plan = formData.get("plan") as string;
   const url = new URL(request.url);
 
   console.log("Billing action triggered for plan:", plan);
-  console.log("URL origin for billing return:", url.origin);
+  const host = url.searchParams.get("host") || "";
+  console.log("URL host for billing return:", host);
 
-  // Verify plan exists in DB
-  const planExists = await db.appPlan.findUnique({ where: { name: plan } });
+  // Verify plan exists in DB or is Free
+  const planExists = plan === "Free" || await db.appPlan.findUnique({ where: { name: plan } });
 
   try {
-    if (planExists && plan !== "Free") {
+    if (!planExists) {
+        throw new Error("Invalid plan selected");
+    }
+
+    // CASE 1: Downgrade to Free
+    if (plan === "Free") {
+      console.log("Processing downgrade to Free plan...");
+      
+      // 1. Get all active subscriptions
+      const checkCharge = await billing.check({
+        plans: [PLAN_PRO, PLAN_UNLIMITED] as any,
+        isTest: true,
+      });
+
+      console.log("Subscriptions found to cancel:", checkCharge.appSubscriptions.length);
+
+      // 2. Cancel each active subscription found
+      for (const sub of checkCharge.appSubscriptions) {
+        if (sub.status === "ACTIVE") {
+          console.log(`Cancelling subscription: ${sub.id}`);
+          const response = await admin.graphql(
+            `#graphql
+            mutation appSubscriptionCancel($id: ID!) {
+              appSubscriptionCancel(id: $id) {
+                userErrors { field message }
+              }
+            }`,
+            { variables: { id: sub.id } }
+          );
+          const result = await response.json();
+          console.log(`Cancellation result for ${sub.id}:`, JSON.stringify(result, null, 2));
+        }
+      }
+
+      // 3. Update DB to reflect Free status and basic limits
+      const freeConfig = PLANS[PLAN_FREE];
+      await db.shop.update({
+        where: { id: session.shop },
+        data: { 
+            plan: PLAN_FREE, 
+            maxRowLimit: freeConfig.maxRowLimit, 
+            displayGbLimit: freeConfig.displayGbLimit,
+            subscriptionStatus: "CANCELED"
+        }
+      });
+
+      console.log("Downgrade to Free completed successfully");
+      return { success: true, plan: "Free" };
+    }
+
+    // CASE 2: Upgrade/Switch to Paid Plan
+    if (plan !== "Free") {
       console.log("Checking billing status for plan:", plan);
-      // 1. Check if the shop already has the selected plan
+      // ... existing paid plan logic ...
       const checkCharge = await billing.check({
         plans: [plan] as any,
         isTest: true,
       });
 
-      console.log("Billing check result - hasActivePayment:", checkCharge.hasActivePayment);
+      console.log("Current billing check result:", JSON.stringify(checkCharge, null, 2));
 
       // 2. If no active charge for this plan, request it
       if (!checkCharge.hasActivePayment) {
         console.log("Initiating billing.request for plan:", plan);
         try {
-          // MUST use https for returnUrl
-          const returnUrl = `${url.origin.replace("http://", "https://")}/app/pricing`;
-          console.log("Forced HTTPS returnUrl:", returnUrl);
+          // Robust returnUrl construction
+          let cleanOrigin = url.origin;
+          const returnUrl = `${cleanOrigin.replace("http://", "https://")}/app/pricing?shop=${session.shop}&host=${host}`;
+          
+          console.log("Plan being requested:", plan);
+          console.log("Using session shop and host for returnUrl:", { shop: session.shop, host });
+          console.log("Final returnUrl:", returnUrl);
 
           return await billing.request({
             plan: plan as any,
@@ -101,15 +154,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             returnUrl,
           });
         } catch (requestError: any) {
-          console.error("Detailed error in billing.request:", requestError);
-          // Extract GraphQL errors if available
-          const graphQLErrors = requestError.response?.errors || requestError.errors;
-          if (graphQLErrors) {
-            console.error("GraphQL Errors:", JSON.stringify(graphQLErrors, null, 2));
-            throw new Error(`Shopify GraphQL Error: ${JSON.stringify(graphQLErrors)}`);
+          console.error("CRITICAL: billing.request failed!");
+          console.error("Error Name:", requestError.name);
+          console.error("Error Message:", requestError.message);
+          
+          // Try to extract deep error info
+          if (requestError.response) {
+            console.error("Response data:", JSON.stringify(requestError.response, null, 2));
           }
+          
           throw requestError;
         }
+      } else {
+          console.log("Shop already has an active payment for this plan. Redirecting to app dashboard.");
+          return { success: true, alreadyActive: true };
       }
     }
   } catch (error: any) {
@@ -196,7 +254,7 @@ export default function PricingPage() {
               </Box>
               
               <InlineStack align="space-between">
-                <Text as="p" tone="subdued">{usage.totalRows} rules used</Text>
+                <div></div>
                 <Text as="p" fontWeight="bold">
                    {usage.currentGb} GB / {usage.maxRowLimit === 999999999 ? "∞" : `${usage.displayGbLimit} GB`}
                 </Text>

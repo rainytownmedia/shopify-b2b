@@ -1,4 +1,5 @@
 import db from "../db.server";
+import { PLANS, PLAN_FREE } from "../config/plans.config";
 
 export async function checkUsage(shopId: string) {
   const shop = await db.shop.findUnique({
@@ -6,8 +7,8 @@ export async function checkUsage(shopId: string) {
     select: { maxRowLimit: true, displayGbLimit: true }
   });
 
-  const maxRowLimit = shop?.maxRowLimit ?? 1000;
-  const displayGbLimit = shop?.displayGbLimit ?? 5.0;
+  const maxRowLimit = shop?.maxRowLimit ?? PLANS[PLAN_FREE].maxRowLimit;
+  const displayGbLimit = shop?.displayGbLimit ?? PLANS[PLAN_FREE].displayGbLimit;
 
   // Count PriceListItems (Tiers & Wholesale Offers)
   const priceItemsCount = await db.priceListItem.count({

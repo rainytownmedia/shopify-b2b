@@ -130,7 +130,7 @@
   }
 
   function updatePricingUI(variantId) {
-    if (!b2bData || (!b2bData.wholesaleRules.length && !b2bData.tierRules.length)) return;
+    if (!b2bData) return;
 
     const wrapper = document.getElementById('b2b-pricing-wrapper');
     const wsContainer = document.getElementById('wholesale-price-container');
@@ -193,11 +193,21 @@
     }
 
     // Evaluate Tier 
-    const tRules = b2bData.tierRules
-      .filter(r => !r.variantId || r.variantId === variantId)
-      .sort((a, b) => a.minQuantity - b.minQuantity);
+    const tRulesRaw = b2bData.tierRules
+      .filter(r => !r.variantId || r.variantId === variantId);
       
-    console.log('[B2B-DEBUG] Filtered Tier Rules:', tRules);
+    // deduplicate by keeping smallest finalPrice per minQuantity
+    let tRuleMap = {};
+    tRulesRaw.forEach(rule => {
+        const fp = getCalculatedPrice(currentPrice, rule);
+        if (!tRuleMap[rule.minQuantity] || fp < tRuleMap[rule.minQuantity].finalPrice) {
+            tRuleMap[rule.minQuantity] = { ...rule, finalPrice: fp };
+        }
+    });
+    
+    const tRules = Object.values(tRuleMap).sort((a, b) => a.minQuantity - b.minQuantity);
+
+    console.log('[B2B-DEBUG] Filtered and Deduped Tier Rules:', tRules);
 
     if (tRules.length > 0) {
       let tierHtml = '<table style="width:100%; text-align:left; border-collapse: collapse; font-size: 0.9em;">';
@@ -207,7 +217,7 @@
       tierHtml += '</tr>';
       
       tRules.forEach(rule => {
-          const finalPrice = getCalculatedPrice(currentPrice, rule);
+          const finalPrice = rule.finalPrice;
           if (currentQty >= rule.minQuantity) {
              // Keeps updating to the highest matched minQuantity tier since they are sorted ascending
              bestApplicableRule = { ...rule, finalPrice };
@@ -285,7 +295,7 @@
         } else {
              // Not eligible for discount -> Remove the invisibility cloak and let Theme handle its UI
              if (antiFlicker) antiFlicker.disabled = true;
-             window.themePriceElement.style.display = '';
+             window.themePriceElement.style.removeProperty('display');
              
              if (proxyEl) proxyEl.style.display = 'none';
         }
@@ -309,6 +319,9 @@
       updatePricingUI(getCurrentVariantId());
     } catch (e) {
       console.error("B2B App Proxy Error:", e);
+      // Fallback: restore price if we can't get data
+      b2bData = { wholesaleRules: [], tierRules: [] };
+      updatePricingUI(getCurrentVariantId());
     }
   }
 

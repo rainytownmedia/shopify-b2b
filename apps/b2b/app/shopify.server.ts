@@ -5,10 +5,11 @@ import {
   shopifyApp,
   BillingInterval,
   BillingReplacementBehavior,
+  DeliveryMethod,
 } from "@shopify/shopify-app-react-router/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
-import { PLAN_PRO, PLAN_UNLIMITED } from "./constants";
+import { PLANS, PLAN_PRO, PLAN_UNLIMITED } from "./config/plans.config";
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
@@ -22,7 +23,7 @@ const shopify = shopifyApp({
   billing: {
     [PLAN_PRO]: {
       lineItems: [{
-        amount: 20,
+        amount: PLANS[PLAN_PRO].price,
         currencyCode: 'USD',
         interval: BillingInterval.Every30Days,
       }],
@@ -30,7 +31,7 @@ const shopify = shopifyApp({
     },
     [PLAN_UNLIMITED]: {
       lineItems: [{
-        amount: 50,
+        amount: PLANS[PLAN_UNLIMITED].price,
         currencyCode: 'USD',
         interval: BillingInterval.Every30Days,
       }],
@@ -39,6 +40,20 @@ const shopify = shopifyApp({
   },
   future: {
     expiringOfflineAccessTokens: true,
+  },
+  webhooks: {
+    APP_UNINSTALLED: {
+      deliveryMethod: DeliveryMethod.Http,
+      callbackUrl: "/webhooks/app/uninstalled",
+    },
+    CUSTOMERS_UPDATE: {
+      deliveryMethod: DeliveryMethod.Http,
+      callbackUrl: "/webhooks/customers/update",
+    },
+    CUSTOMERS_CREATE: {
+      deliveryMethod: DeliveryMethod.Http,
+      callbackUrl: "/webhooks/customers/update",
+    },
   },
   hooks: {
     afterAuth: async ({ session }) => {
