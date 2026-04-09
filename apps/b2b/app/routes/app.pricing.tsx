@@ -11,6 +11,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, billing } = await authenticate.admin(request);
   const url = new URL(request.url);
   
+  // 1. Persist/Update the host in Database for this shop
+  const host = url.searchParams.get("host");
+  if (host) {
+    await db.shop.update({
+      where: { id: session.shop },
+      data: { host }
+    });
+  }
+  
   // Get all active plans from DB
   const dbPlans = await db.appPlan.findMany({
     where: { isActive: true },
@@ -143,12 +152,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (!checkCharge.hasActivePayment) {
         console.log("Initiating billing.request for plan:", plan);
         try {
-          // Robust returnUrl construction
+          // Robust returnUrl construction using DB host as fallback
           let cleanOrigin = url.origin;
-          const host = url.searchParams.get("host") || "";
+          
+          let host = url.searchParams.get("host") || formData.get("host")?.toString();
+          
           if (!host) {
-             console.error("WARNING: 'host' parameter is missing in action URL. returnUrl might not re-embed correctly.");
+            console.log("Host missing in request. Attempting to fetch from Database...");
+            const shopData = await db.shop.findUnique({ where: { id: session.shop }, select: { host: true } });
+            host = shopData?.host || "";
           }
+
+          if (!host) {
+             console.error("CRITICAL: 'host' is STILL missing even in DB. Redirection might fail.");
+          }
+
           const returnUrl = `${cleanOrigin.replace("http://", "https://")}/app/pricing?shop=${session.shop}&host=${host}`;
           
           console.log("Plan being requested:", plan);

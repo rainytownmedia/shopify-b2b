@@ -49,7 +49,7 @@ model Shop {
   updatedAt        DateTime  @updatedAt @map("updated_at")
   priceLists       PriceList[]
 
-  @@map("shop")
+  @@map("Shop")
 }
 
 model PriceList {
