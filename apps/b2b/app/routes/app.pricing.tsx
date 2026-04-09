@@ -181,17 +181,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             isTest: true,
             returnUrl,
           });
-        } catch (requestError: any) {
-          console.error("CRITICAL: billing.request failed!");
-          console.error("Error Name:", requestError.name);
-          console.error("Error Message:", requestError.message);
-          
-          // Try to extract deep error info
-          if (requestError.response) {
-            console.error("Response data:", JSON.stringify(requestError.response, null, 2));
+        } catch (error: any) {
+          // 1. If the error is actually a redirect Response (standard Shopify behavior), handle it gracefully
+          if (error instanceof Response && (error.status === 302 || error.status === 301)) {
+            const redirectUrl = error.headers.get("Location");
+            console.log("Redirecting to Shopify Billing confirmation page...");
+            return { redirectUrl };
+          }
+
+          // 2. Real reauthorization required (401 from API)
+          if (error.status === 401 && error.headers.has('X-Shopify-API-Request-Failure-Reauthorize-Url')) {
+            const redirectUrl = error.headers.get('X-Shopify-API-Request-Failure-Reauthorize-Url');
+            console.log("Directing client to reauthorization URL:", redirectUrl);
+            return { redirectUrl };
+          }
+
+          // 3. Actual error logging
+          console.error("ACTUAL billing.request error occurred!");
+          console.error("Error Status:", error.status);
+          console.error("Error Message:", error.message || "No message provided");
+          if (error.response) {
+            console.error("Response data:", JSON.stringify(error.response, null, 2));
           }
           
-          throw requestError;
+          return { error: "Failed to initiate billing request. Please try again." };
         }
       } else {
           console.log("Shop already has an active payment for this plan. Redirecting to app dashboard.");
@@ -199,16 +212,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     }
   } catch (error: any) {
-    if (error instanceof Response) {
-      // Special handling for 401 reauthorization (Billing confirm page)
-      if (error.status === 401 && error.headers.has('X-Shopify-API-Request-Failure-Reauthorize-Url')) {
-        const redirectUrl = error.headers.get('X-Shopify-API-Request-Failure-Reauthorize-Url');
-        console.log("Directing client to reauthorization URL:", redirectUrl);
-        return { redirectUrl };
-      }
-      throw error;
-    }
-
     console.error("Final catch in billing action:", error);
     
     return { 
