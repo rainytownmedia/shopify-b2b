@@ -222,8 +222,17 @@ export default function PricingPage() {
  
   const handleUpgrade = (plan: string) => {
     console.log("Client-side: Initiating upgrade to plan:", plan, "with host:", host);
-    // Pass host in the formData to ensure it reaches the action reliably
-    submit({ plan, host: host || "" }, { method: "post" });
+    // 1. Pass host in the formData
+    // 2. IMPORTANT: Also append current search params (shop, host) to the action URL 
+    // so that authenticate.admin(request) can identify the session.
+    const searchParams = new URLSearchParams(window.location.search);
+    submit(
+      { plan, host: host || "" }, 
+      { 
+        method: "post", 
+        action: `?${searchParams.toString()}` 
+      }
+    );
   };
 
   return (
