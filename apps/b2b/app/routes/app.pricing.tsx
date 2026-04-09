@@ -9,6 +9,7 @@ import { PLANS, PLAN_FREE, PLAN_PRO, PLAN_UNLIMITED } from "../config/plans.conf
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, billing } = await authenticate.admin(request);
+  const url = new URL(request.url);
   
   // Get all active plans from DB
   const dbPlans = await db.appPlan.findMany({
@@ -57,7 +58,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     activePlan: activePlanName,
     usage,
-    availablePlans: dbPlans
+    availablePlans: dbPlans,
+    host: url.searchParams.get("host"),
   };
 };
 
@@ -65,11 +67,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { session, billing, admin } = await authenticate.admin(request);
   const formData = await request.formData();
   const plan = formData.get("plan") as string;
+  const hostFromForm = formData.get("host") as string;
   const url = new URL(request.url);
 
   console.log("Billing action triggered for plan:", plan);
-  const host = url.searchParams.get("host") || "";
-  console.log("URL host for billing return:", host);
+  const host = hostFromForm || url.searchParams.get("host") || "";
+  console.log("Resolved host for billing return:", host);
 
   // Verify plan exists in DB or is Free
   const planExists = plan === "Free" || await db.appPlan.findUnique({ where: { name: plan } });
@@ -142,6 +145,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         try {
           // Robust returnUrl construction
           let cleanOrigin = url.origin;
+          const host = url.searchParams.get("host") || "";
+          if (!host) {
+             console.error("WARNING: 'host' parameter is missing in action URL. returnUrl might not re-embed correctly.");
+          }
           const returnUrl = `${cleanOrigin.replace("http://", "https://")}/app/pricing?shop=${session.shop}&host=${host}`;
           
           console.log("Plan being requested:", plan);
@@ -194,11 +201,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function PricingPage() {
-  const { activePlan, usage, availablePlans } = useLoaderData<typeof loader>();
+  const { activePlan, usage, availablePlans, host } = useLoaderData<typeof loader>();
   const actionData = useActionData<any>();
   const submit = useSubmit();
   const navigation = useNavigation();
-
+ 
   useEffect(() => {
     if (actionData?.redirectUrl) {
       console.log("Redirecting to Shopify Billing page...");
@@ -209,13 +216,14 @@ export default function PricingPage() {
       }
     }
   }, [actionData]);
-
+ 
   const isSubmitting = navigation.state === "submitting";
   const progressPercent = usage.maxRowLimit > 0 ? Math.min(100, (usage.totalRows / usage.maxRowLimit) * 100) : 0;
-
+ 
   const handleUpgrade = (plan: string) => {
-    console.log("Client-side: Initiating upgrade to plan:", plan);
-    submit({ plan }, { method: "post" });
+    console.log("Client-side: Initiating upgrade to plan:", plan, "with host:", host);
+    // Pass host in the formData to ensure it reaches the action reliably
+    submit({ plan, host: host || "" }, { method: "post" });
   };
 
   return (
@@ -256,7 +264,7 @@ export default function PricingPage() {
               <InlineStack align="space-between">
                 <div></div>
                 <Text as="p" fontWeight="bold">
-                   {usage.currentGb} GB / {usage.maxRowLimit === 999999999 ? "∞" : `${usage.displayGbLimit} GB`}
+                   {usage.currentGb} GB / {usage.displayGbLimit >= 9999 ? "∞" : `${usage.displayGbLimit} GB`}
                 </Text>
               </InlineStack>
 
