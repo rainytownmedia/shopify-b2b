@@ -201,13 +201,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     }
   } catch (error: any) {
-    // billing.request() throws a 401 Response with the Shopify billing confirmation URL.
-    // This is NOT an error — it's the standard Shopify billing flow.
-    // We must redirect the browser to that URL for the merchant to confirm payment.
-    if (error instanceof Response && error.headers.has('X-Shopify-API-Request-Failure-Reauthorize-Url')) {
-      const confirmUrl = error.headers.get('X-Shopify-API-Request-Failure-Reauthorize-Url')!;
-      console.log("Redirecting to Shopify billing confirmation page:", confirmUrl);
-      throw redirect(confirmUrl);
+    if (error instanceof Response) {
+      console.log("Re-throwing Response from billing action (status, headers):", error.status, JSON.stringify(Object.fromEntries(error.headers.entries())));
+      throw error;
     }
 
     // Actual unexpected error
