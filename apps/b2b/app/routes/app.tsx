@@ -74,6 +74,19 @@ function AppInner() {
   const location = useLocation();
   const navigate = useNavigate();
 
+  // Detect success=true and show global toast
+  useEffect(() => {
+    const searchParams = new URLSearchParams(location.search);
+    if (shopify && searchParams.get("success") === "true") {
+      shopify.toast.show("Plan updated successfully!", { duration: 5000 });
+      
+      // Clean up the URL
+      searchParams.delete("success");
+      const newSearch = searchParams.toString();
+      navigate(location.pathname + (newSearch ? `?${newSearch}` : ""), { replace: true });
+    }
+  }, [location.search, location.pathname, shopify, navigate]);
+
   // Clean up ?reset=1 immediately after navigation
   useEffect(() => {
     if (location.search.includes("reset=1")) {

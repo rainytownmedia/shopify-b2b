@@ -1,4 +1,4 @@
-import { useLoaderData, useSubmit, useNavigation, useActionData } from "react-router";
+import { useLoaderData, useSubmit, useNavigation, useActionData, redirect } from "react-router";
 import { useEffect } from "react";
 import { Page, Layout, Card, Text, BlockStack, InlineStack, Button, Badge, ProgressBar, Box, Banner } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
@@ -63,12 +63,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   const usage = await checkUsage(session.shop);
+  const hostParam = url.searchParams.get("host");
+  const success = url.searchParams.get("success") === "true";
 
   return {
     activePlan: activePlanName,
     usage,
     availablePlans: dbPlans,
-    host: host,
+    host: hostParam,
+    success,
   };
 };
 
@@ -151,73 +154,67 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // 2. If no active charge for this plan, request it
       if (!checkCharge.hasActivePayment) {
         console.log("Initiating billing.request for plan:", plan);
-        try {
-          // Robust returnUrl construction using DB host as fallback
-          let cleanOrigin = url.origin;
-          
-          let host = url.searchParams.get("host") || formData.get("host")?.toString();
-          
-          if (!host) {
-            console.log("Host missing in request. Attempting to fetch from Database...");
-            const shopData = await db.shop.findUnique({ 
-              where: { id: session.shop }, 
-              select: { host: true } 
-            });
-            host = shopData?.host || "";
-          }
 
-          if (!host) {
-             console.error("CRITICAL: 'host' is STILL missing even in DB. Redirection might fail.");
-          }
-
-          const returnUrl = `${cleanOrigin.replace("http://", "https://")}/app/pricing?shop=${session.shop}&host=${host}`;
-          
-          console.log("Plan being requested:", plan);
-          console.log("Using session shop and host for returnUrl:", { shop: session.shop, host });
-          console.log("Final returnUrl:", returnUrl);
-
-          return await billing.request({
-            plan: plan as any,
-            isTest: true,
-            returnUrl,
+        let host = url.searchParams.get("host") || formData.get("host")?.toString();
+        
+        if (!host) {
+          console.log("Host missing in request. Attempting to fetch from Database...");
+          const shopData = await db.shop.findUnique({ 
+            where: { id: session.shop }, 
+            select: { host: true } 
           });
-        } catch (error: any) {
-          // 1. If the error is actually a redirect Response (standard Shopify behavior), handle it gracefully
-          if (error instanceof Response && (error.status === 302 || error.status === 301)) {
-            const redirectUrl = error.headers.get("Location");
-            console.log("Redirecting to Shopify Billing confirmation page...");
-            return { redirectUrl };
-          }
-
-          // 2. Real reauthorization required (401 from API)
-          if (error.status === 401 && error.headers.has('X-Shopify-API-Request-Failure-Reauthorize-Url')) {
-            const redirectUrl = error.headers.get('X-Shopify-API-Request-Failure-Reauthorize-Url');
-            console.log("Directing client to reauthorization URL:", redirectUrl);
-            return { redirectUrl };
-          }
-
-          // 3. Actual error logging
-          console.error("ACTUAL billing.request error occurred!");
-          console.error("Error Status:", error.status);
-          console.error("Error Message:", error.message || "No message provided");
-          if (error.response) {
-            console.error("Response data:", JSON.stringify(error.response, null, 2));
-          }
-          
-          return { error: "Failed to initiate billing request. Please try again." };
+          host = shopData?.host || "";
         }
+
+        console.log("Host resolved:", host);
+
+        // Construct the correct returnUrl using the Shopify Admin embedded app URL format.
+        // host is base64 encoded "admin.shopify.com/store/{store-name}"
+        // The correct returnUrl must point to admin.shopify.com so Shopify re-embeds the app correctly.
+        let returnUrl: string;
+        if (host) {
+          // Decode host from base64: gives "admin.shopify.com/store/{store-name}"
+          const decodedHost = Buffer.from(host, "base64").toString("utf-8");
+          // App handle from Shopify Admin (seen in URL: /apps/rainytownmedia-b2b)
+          const appHandle = "rainytownmedia-b2b";
+          returnUrl = `https://${decodedHost}/apps/${appHandle}/pricing?success=true`;
+        } else {
+          // Fallback: use the tunnel URL (less reliable but better than nothing)
+          const origin = url.origin.startsWith("http://")
+            ? url.origin.replace("http://", "https://")
+            : url.origin;
+          returnUrl = `${origin}/app/pricing?success=true&shop=${encodeURIComponent(session.shop)}`;
+        }
+        
+        console.log("Final returnUrl:", returnUrl);
+
+        // billing.request() throws a redirect Response — DO NOT catch it, let it propagate
+        // React Router / Shopify App framework will handle the redirect automatically
+        return await billing.request({
+          plan: plan as any,
+          isTest: true,
+          returnUrl,
+        });
       } else {
-          console.log("Shop already has an active payment for this plan. Redirecting to app dashboard.");
-          return { success: true, alreadyActive: true };
+        console.log("Shop already has an active payment for this plan.");
+        return { success: true, alreadyActive: true };
       }
     }
   } catch (error: any) {
-    console.error("Final catch in billing action:", error);
-    
+    // billing.request() throws a 401 Response with the Shopify billing confirmation URL.
+    // This is NOT an error — it's the standard Shopify billing flow.
+    // We must redirect the browser to that URL for the merchant to confirm payment.
+    if (error instanceof Response && error.headers.has('X-Shopify-API-Request-Failure-Reauthorize-Url')) {
+      const confirmUrl = error.headers.get('X-Shopify-API-Request-Failure-Reauthorize-Url')!;
+      console.log("Redirecting to Shopify billing confirmation page:", confirmUrl);
+      throw redirect(confirmUrl);
+    }
+
+    // Actual unexpected error
+    console.error("Unexpected billing error:", error);
     return { 
       success: false, 
       error: error.message || "Unknown billing error",
-      details: error.stack || "No stack trace available"
     };
   }
 
@@ -225,23 +222,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function PricingPage() {
-  const { activePlan, usage, availablePlans, host } = useLoaderData<typeof loader>();
-  const actionData = useActionData<any>();
+  const { activePlan, usage, availablePlans, host, success } = useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
   const submit = useSubmit();
   const navigation = useNavigation();
+
+  const isLoading = navigation.state === "submitting" || (navigation.state === "loading" && navigation.formData?.get("plan"));
+
+  // billing.request() is handled entirely server-side as a redirect response.
+  // No client-side redirect needed.
  
-  useEffect(() => {
-    if (actionData?.redirectUrl) {
-      console.log("Redirecting to Shopify Billing page...");
-      if (window.top) {
-        window.top.location.href = actionData.redirectUrl;
-      } else {
-        window.location.href = actionData.redirectUrl;
-      }
-    }
-  }, [actionData]);
- 
-  const isSubmitting = navigation.state === "submitting";
   const progressPercent = usage.maxRowLimit > 0 ? Math.min(100, (usage.totalRows / usage.maxRowLimit) * 100) : 0;
  
   const handleUpgrade = (plan: string) => {
@@ -263,15 +253,10 @@ export default function PricingPage() {
     <Page title="Plans & Pricing">
       <Layout>
         {/* Error Messages */}
-        {actionData?.error && (
+        {actionData && "error" in actionData && actionData.error && (
           <Layout.Section>
             <Banner title="Billing Error" tone="critical">
-              <p>{actionData.error}</p>
-              {actionData.details && (
-                <Box paddingBlockStart="200">
-                   <Text as="p" variant="bodySm" tone="subdued">Technical Details: {actionData.details}</Text>
-                </Box>
-              )}
+              <p>{actionData.error as string}</p>
             </Banner>
           </Layout.Section>
         )}
@@ -344,8 +329,8 @@ export default function PricingPage() {
                       <Button 
                         fullWidth 
                         variant={activePlan === plan.name ? "secondary" : "primary"} 
-                        disabled={activePlan === plan.name || isSubmitting}
-                        loading={isSubmitting}
+                        disabled={activePlan === plan.name || !!isLoading}
+                        loading={!!isLoading && navigation.formData?.get("plan") === plan.name}
                         onClick={() => handleUpgrade(plan.name)}
                       >
                         {activePlan === plan.name ? "Current Plan" : "Select Plan"}
