@@ -177,7 +177,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           const decodedHost = Buffer.from(host, "base64").toString("utf-8");
           // App handle from Shopify Admin (seen in URL: /apps/rainytownmedia-b2b)
           const appHandle = "rainytownmedia-b2b";
-          returnUrl = `https://${decodedHost}/apps/${appHandle}/pricing?success=true`;
+          returnUrl = `https://${decodedHost}/apps/${appHandle}/app/pricing?success=true`;
         } else {
           // Fallback: use the tunnel URL (less reliable but better than nothing)
           const origin = url.origin.startsWith("http://")
@@ -202,7 +202,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   } catch (error: any) {
     if (error instanceof Response) {
-      console.log("Re-throwing Response from billing action (status, headers):", error.status, JSON.stringify(Object.fromEntries(error.headers.entries())));
+      // Shopify billing.request() throws a 401 with the charge confirmation URL in a header.
+      // We cannot redirect from inside the Shopify Admin iframe using a normal redirect().
+      // Instead, return the URL to the client so it can use window.open(_top) to break out.
+      const reauthorizeUrl = error.headers.get("x-shopify-api-request-failure-reauthorize-url");
+      if (reauthorizeUrl) {
+        console.log("Billing requires merchant approval. Returning confirmation URL to client:", reauthorizeUrl);
+        return { billingUrl: reauthorizeUrl };
+      }
+
+      console.log("Re-throwing non-billing Response (status):", error.status);
       throw error;
     }
 
@@ -225,8 +234,15 @@ export default function PricingPage() {
 
   const isLoading = navigation.state === "submitting" || (navigation.state === "loading" && navigation.formData?.get("plan"));
 
-  // billing.request() is handled entirely server-side as a redirect response.
-  // No client-side redirect needed.
+  // When billing.request() is called, Shopify returns a 401 with the charge confirmation URL.
+  // The server extracts that URL and returns it as { billingUrl }.
+  // We then use window.open(..., '_top') to break out of the Shopify Admin iframe.
+  useEffect(() => {
+    if (actionData && "billingUrl" in actionData && actionData.billingUrl) {
+      console.log("Client: Navigating top frame to billing confirmation URL:", actionData.billingUrl);
+      window.open(actionData.billingUrl as string, "_top");
+    }
+  }, [actionData]);
  
   const progressPercent = usage.maxRowLimit > 0 ? Math.min(100, (usage.totalRows / usage.maxRowLimit) * 100) : 0;
  
