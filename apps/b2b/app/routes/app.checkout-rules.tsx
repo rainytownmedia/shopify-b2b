@@ -8,15 +8,33 @@ import { checkUsage } from "../utils/quota.server";
 import React from "react";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 import { Banner } from "@shopify/polaris";
+import { TagCombobox } from "../components/TagCombobox";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
-  const rules = await db.checkoutRule.findMany({
-    where: { shopId: session.shop, type: "CHECKOUT_VALIDATION" },
-    orderBy: { updatedAt: 'desc' }
-  });
-  const usage = await checkUsage(session.shop);
-  return { rules, usage };
+  const { admin, session } = await authenticate.admin(request);
+  const [rules, usage, cTagRes] = await Promise.all([
+    db.checkoutRule.findMany({
+      where: { shopId: session.shop, type: "CHECKOUT_VALIDATION" },
+      orderBy: { updatedAt: 'desc' }
+    }),
+    checkUsage(session.shop),
+    admin.graphql(`#graphql
+      query getCustomerTags {
+        customers(first: 250) { edges { node { tags } } }
+      }
+    `).catch(() => null)
+  ]);
+  const shopifyTags = new Set<string>();
+  if (cTagRes) {
+    const cJson: any = await cTagRes.json();
+    cJson?.data?.customers?.edges?.forEach((e: any) =>
+      e.node.tags.forEach((t: string) => shopifyTags.add(t))
+    );
+  }
+  const dbTags = rules.map(r => r.customerTag).filter(Boolean) as string[];
+  const uniqueTags = Array.from(new Set([...dbTags, ...Array.from(shopifyTags)]));
+  if (!uniqueTags.includes("ALL")) uniqueTags.unshift("ALL");
+  return { rules, usage, uniqueTags };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -60,7 +78,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function CheckoutRulesPage() {
-  const { rules, usage } = useLoaderData<typeof loader>();
+  const { rules, usage, uniqueTags } = useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
@@ -69,7 +87,7 @@ export default function CheckoutRulesPage() {
   const isEditing = !!ruleId;
 
   const [name, setName] = useState("");
-  const [customerTag, setCustomerTag] = useState("");
+  const [customerTag, setCustomerTag] = useState("ALL");
   const [errorMessage, setErrorMessage] = useState("Your order does not meet our B2B requirements.");
   const [active, setActive] = useState(true);
   const [minQty, setMinQty] = useState("1");
@@ -89,7 +107,7 @@ export default function CheckoutRulesPage() {
       }
     } else {
       setName("");
-      setCustomerTag("");
+      setCustomerTag("ALL");
       setErrorMessage("Your order does not meet our B2B requirements.");
       setActive(true);
       setMinQty("1");
@@ -204,7 +222,11 @@ export default function CheckoutRulesPage() {
           </div>
           <div style={formGroupStyle}>
             <label style={labelStyle}>Target Customer Tag</label>
-            <input type="text" value={customerTag} onChange={e => setCustomerTag(e.target.value)} style={inputStyle} placeholder="e.g. VIP" />
+            <TagCombobox
+              value={customerTag || "ALL"}
+              onChange={(val) => setCustomerTag(val)}
+              availableTags={uniqueTags?.length ? uniqueTags : ["ALL"]}
+            />
           </div>
           
           <div style={{ border: "1px solid #eee", padding: "20px", borderRadius: "8px", background: "#fcfcfc", marginBottom: "20px" }}>

@@ -1,0 +1,21 @@
+api_version = "2026-01"
+
+[[extensions]]
+name = "B2B Cart Discount"
+handle = "b2b-cart-discount"
+uid = "ef98e9a5-969e-4ae6-3d6d-4c572991eb495b30c551"
+type = "function"
+description = "Applies bulk discounts to the entire cart based on order value."
+
+  [[extensions.targeting]]
+  target = "purchase.order-discount.run"
+  input_query = "src/run.graphql"
+  export = "run"
+
+  [extensions.build]
+  command = ""
+  path = "dist/function.wasm"
+
+  [extensions.ui.paths]
+  create = "/"
+  details = "/"

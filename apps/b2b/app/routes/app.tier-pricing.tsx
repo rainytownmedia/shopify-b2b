@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment } from "react";
+import { useState, useEffect, Fragment } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData, useSearchParams, useNavigation, useBlocker } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
@@ -8,6 +8,7 @@ import { checkUsage } from "../utils/quota.server";
 import React from "react";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 import { Banner } from "@shopify/polaris";
+import { TagCombobox } from "../components/TagCombobox";
 
 /**
  * LOADER
@@ -273,69 +274,9 @@ export default function TierPricingPage() {
     setSearchParams(newParams);
   };
 
-  const AutocompleteSelect = ({ value, onChange, availableTags }: { value: string, onChange: (val: string) => void, availableTags: string[] }) => {
-    const [isOpen, setIsOpen] = useState(false);
-    const [search, setSearch] = useState(value || "");
-    const wrapperRef = useRef<HTMLDivElement>(null);
-
-    useEffect(() => setSearch(value || ""), [value]);
-
-    useEffect(() => {
-        function handleClickOutside(event: any) {
-            if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
-                setIsOpen(false);
-                if (search !== value && search.trim() !== "") onChange(search.trim());
-            }
-        }
-        document.addEventListener("mousedown", handleClickOutside);
-        return () => document.removeEventListener("mousedown", handleClickOutside);
-    }, [search, value, onChange]);
-
-    const filtered = availableTags.filter(t => t.toLowerCase().includes(search.toLowerCase()));
-
-    return (
-        <div ref={wrapperRef} style={{ position: "relative", width: "100%" }}>
-            <input 
-                type="text" 
-                style={inputStyle}
-                placeholder="e.g. ALL, wholesale..."
-                value={search}
-                onChange={e => { setSearch(e.target.value); setIsOpen(true); }}
-                onFocus={() => setIsOpen(true)}
-                onKeyDown={e => {
-                   if (e.key === "Enter") {
-                       e.preventDefault();
-                       if (search.trim() !== "") onChange(search.trim());
-                       setIsOpen(false);
-                   }
-                }}
-            />
-            {isOpen && (
-                <div style={{ position: "absolute", zIndex: 10, width: "100%", background: "white", border: "1px solid #ccc", borderRadius: "6px", maxHeight: "150px", overflowY: "auto", boxShadow: "0 4px 12px rgba(0,0,0,0.15)", marginTop: "4px" }}>
-                    {filtered.map(tag => (
-                        <div 
-                            key={tag} 
-                            style={{ padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid #eee", background: value === tag ? "#f4f6f8" : "white" }}
-                            onMouseDown={(e) => { e.preventDefault(); onChange(tag); setIsOpen(false); }}
-                            onMouseEnter={e => e.currentTarget.style.background = "#f4f6f8"}
-                            onMouseLeave={e => e.currentTarget.style.background = value === tag ? "#f4f6f8" : "white"}
-                        >
-                            {tag}
-                        </div>
-                    ))}
-                    {search.trim() !== "" && !availableTags.map(t=>t.toLowerCase()).includes(search.trim().toLowerCase()) && (
-                         <div 
-                            style={{ padding: "8px 12px", cursor: "pointer", color: "#008060", fontStyle: "italic", borderBottom: "1px solid #eee" }}
-                            onMouseDown={(e) => { e.preventDefault(); onChange(search.trim()); setIsOpen(false); }}
-                        >
-                            + Create tag "{search.trim()}"
-                        </div>
-                    )}
-                </div>
-            )}
-        </div>
-    );
-  }
+  const TagSelect = ({ value, onChange, availableTags }: { value: string, onChange: (val: string) => void, availableTags: string[] }) => (
+    <TagCombobox value={value} onChange={onChange} availableTags={availableTags} />
+  );
 
   // Global Navigation Blocker
   const blocker = useBlocker(
@@ -619,8 +560,8 @@ export default function TierPricingPage() {
                                             <tr key={rule.tempId}>
                                                 <td></td>
                                                 <td style={tdStyle}>
-                                                    <AutocompleteSelect 
-                                                        value={rule.tag || ""} 
+                                                    <TagSelect
+                                                        value={rule.tag || "ALL"}
                                                         availableTags={uniqueTags}
                                                         onChange={(val) => { const nr=[...localRules]; nr.find(r=>r.tempId===rule.tempId).tag=val; setLocalRules(nr); setHasChanges(true); }}
                                                     />
@@ -650,8 +591,8 @@ export default function TierPricingPage() {
                                     <tr key={rule.tempId}>
                                         <td style={tdStyle}>All Variants (Combined)</td>
                                         <td style={tdStyle}>
-                                            <AutocompleteSelect 
-                                                value={rule.tag || ""} 
+                                            <TagSelect
+                                                value={rule.tag || "ALL"}
                                                 availableTags={uniqueTags}
                                                 onChange={(val) => { const nr=[...localRules]; nr.find(r=>r.tempId===rule.tempId).tag=val; setLocalRules(nr); setHasChanges(true); }}
                                             />

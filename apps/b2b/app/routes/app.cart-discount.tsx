@@ -8,60 +8,138 @@ import { checkUsage } from "../utils/quota.server";
 import React from "react";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 import { Banner } from "@shopify/polaris";
+import { TagCombobox } from "../components/TagCombobox";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
-  const rules = await db.cartDiscount.findMany({
-    where: { shopId: session.shop },
-    orderBy: { updatedAt: 'desc' }
-  });
-  const usage = await checkUsage(session.shop);
-  return { rules, usage };
+  const { admin, session } = await authenticate.admin(request);
+  const [rules, usage, cTagRes] = await Promise.all([
+    db.cartDiscount.findMany({
+      where: { shopId: session.shop },
+      orderBy: { updatedAt: 'desc' }
+    }),
+    checkUsage(session.shop),
+    admin.graphql(`#graphql
+      query getCustomerTags {
+        customers(first: 250) { edges { node { tags } } }
+      }
+    `).catch(() => null)
+  ]);
+  const shopifyTags = new Set<string>();
+  if (cTagRes) {
+    const cJson: any = await cTagRes.json();
+    cJson?.data?.customers?.edges?.forEach((e: any) =>
+      e.node.tags.forEach((t: string) => shopifyTags.add(t))
+    );
+  }
+  const dbTags = rules.map(r => r.customerTag).filter(Boolean) as string[];
+  const uniqueTags = Array.from(new Set([...dbTags, ...Array.from(shopifyTags)]));
+  if (!uniqueTags.includes("ALL")) uniqueTags.unshift("ALL");
+  return { rules, usage, uniqueTags };
 };
 
+/**
+ * SYNC HELPER
+ * Aggregates all active cart discounts and syncs to Shopify Shop Metafield
+ */
+async function syncCartDiscounts(admin: any, shopId: string) {
+  // 1. Get all active rules for this shop
+  const activeRules = await db.cartDiscount.findMany({
+    where: { shopId: shopId, status: "active" }
+  });
+
+  // 2. Format as JSON for the shop-level metafield
+  const cartRules = activeRules.map(r => ({
+      id: r.id,
+      name: r.name,
+      tag: r.customerTag,
+      minSubtotal: parseFloat((r.minSubtotal || 0).toString()),
+      discountType: r.discountType,
+      value: parseFloat(r.value.toString())
+  }));
+
+  // 3. Sync to Shopify Shop Metafield
+  // We use shop-level metafield (ownerId is not needed for Shop metafields via metafieldsSet if we use the Shop GID)
+  // First get the Shop GID
+  const shopRes = await admin.graphql(`#graphql query { shop { id } }`);
+  const shopJson: any = await shopRes.json();
+  const shopGid = shopJson.data?.shop?.id;
+
+  if (shopGid) {
+    await admin.graphql(
+      `#graphql
+      mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) {
+          userErrors { field message }
+        }
+      }`,
+      {
+        variables: {
+          metafields: [{
+            ownerId: shopGid,
+            namespace: "b2b_app",
+            key: "cart_rules",
+            type: "json",
+            value: JSON.stringify(cartRules)
+          }]
+        }
+      }
+    );
+  }
+}
+
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const actionType = formData.get("actionType");
 
-  if (actionType === "saveCartDiscount") {
-    const id = formData.get("id") as string;
-    const name = formData.get("name") as string;
-    const customerTag = formData.get("customerTag") as string;
-    const minSubtotal = parseFloat(formData.get("minOrderValue") as string);
-    const discountType = formData.get("discountType") as string;
-    const value = parseFloat(formData.get("discountValue") as string);
-    const status = formData.get("active") === "true" ? "active" : "inactive";
+  try {
+    if (actionType === "saveCartDiscount") {
+      const id = formData.get("id") as string;
+      const name = formData.get("name") as string;
+      const customerTag = formData.get("customerTag") as string;
+      const minSubtotal = parseFloat(formData.get("minOrderValue") as string);
+      const discountType = formData.get("discountType") as string;
+      const value = parseFloat(formData.get("discountValue") as string);
+      const status = formData.get("active") === "true" ? "active" : "inactive";
 
-    const data = {
-      name,
-      customerTag,
-      minSubtotal,
-      discountType,
-      value,
-      status,
-      shopId: session.shop
-    };
+      const data = {
+        name,
+        customerTag,
+        minSubtotal,
+        discountType,
+        value,
+        status,
+        shopId: session.shop
+      };
 
-    if (id === "new") {
-      const usage = await checkUsage(session.shop);
-      if (usage.isLimitReached) {
-        return { error: `Storage Limit Exceeded! You only have ${usage.maxRowLimit} rule slots.` };
+      if (id === "new") {
+        const usage = await checkUsage(session.shop);
+        if (usage.isLimitReached) {
+          return { error: `Storage Limit Exceeded! You only have ${usage.maxRowLimit} rule slots.` };
+        }
+        await db.cartDiscount.create({ data });
+      } else {
+        await db.cartDiscount.update({ where: { id }, data });
       }
-      await db.cartDiscount.create({ data });
-    } else {
-      await db.cartDiscount.update({ where: { id }, data });
+    } else if (actionType === "deleteCartDiscount") {
+      const id = formData.get("id") as string;
+      await db.cartDiscount.delete({ where: { id } });
     }
-  } else if (actionType === "deleteCartDiscount") {
-    const id = formData.get("id") as string;
-    await db.cartDiscount.delete({ where: { id } });
+
+    // --- TRIGGER SYNC ---
+    await syncCartDiscounts(admin, session.shop);
+    // --------------------
+
+  } catch (error: any) {
+    console.error("Cart Discount Action Error:", error);
+    return { error: error.message };
   }
 
   return { success: true };
 };
 
 export default function CartDiscountPage() {
-  const { rules, usage } = useLoaderData<typeof loader>();
+  const { rules, usage, uniqueTags } = useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
@@ -71,7 +149,7 @@ export default function CartDiscountPage() {
   const isEditing = !!ruleId;
 
   const [name, setName] = useState("");
-  const [customerTag, setCustomerTag] = useState("");
+  const [customerTag, setCustomerTag] = useState("ALL");
   const [minOrderValue, setMinOrderValue] = useState("0");
   const [discountType, setDiscountType] = useState("PERCENTAGE");
   const [discountValue, setDiscountValue] = useState("0");
@@ -90,7 +168,7 @@ export default function CartDiscountPage() {
       }
     } else {
       setName("");
-      setCustomerTag("");
+      setCustomerTag("ALL");
       setMinOrderValue("0");
       setDiscountType("PERCENTAGE");
       setDiscountValue("0");
@@ -201,7 +279,11 @@ export default function CartDiscountPage() {
           </div>
           <div style={formGroupStyle}>
             <label style={labelStyle}>Target Customer Tag</label>
-            <input type="text" value={customerTag} onChange={e => setCustomerTag(e.target.value)} style={inputStyle} placeholder="e.g. VIP" />
+            <TagCombobox
+              value={customerTag || "ALL"}
+              onChange={(val) => setCustomerTag(val)}
+              availableTags={uniqueTags?.length ? uniqueTags : ["ALL"]}
+            />
           </div>
           <div style={formGroupStyle}>
             <label style={labelStyle}>Minimum Order Value ($)</label>

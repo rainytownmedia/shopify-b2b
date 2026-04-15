@@ -1,0 +1,22 @@
+query RunInput {
+  cart {
+    buyerIdentity {
+      customer {
+        id
+        metafield(namespace: "b2b_app", key: "b2b_tags") {
+          value
+        }
+      }
+    }
+    cost {
+      subtotalAmount {
+        amount
+      }
+    }
+  }
+  shop {
+    metafield(namespace: "b2b_app", key: "cart_rules") {
+      value
+    }
+  }
+}

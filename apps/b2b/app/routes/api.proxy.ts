@@ -40,7 +40,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       shopId: shop,
       OR: [
         { category: "TIER", customerTag: { in: [...customerTags, "ALL"] } },
-        { category: "WHOLESALE", customerTag: { in: customerTags } }
+        { category: "WHOLESALE", customerTag: { in: [...customerTags, "ALL"] } }
       ]
     },
     include: {

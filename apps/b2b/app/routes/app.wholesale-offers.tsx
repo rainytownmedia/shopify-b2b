@@ -8,6 +8,106 @@ import { checkUsage } from "../utils/quota.server";
 import React from "react";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 import { Banner } from "@shopify/polaris";
+import { TagCombobox } from "../components/TagCombobox";
+
+/**
+ * SYNC HELPER
+ * Aggregates all rules (Wholesale & Tier) for a list of products and syncs to Shopify Metafields
+ */
+async function syncProductsMetafields(admin: any, shopId: string, productIds: string[]) {
+  if (productIds.length === 0) return;
+
+  // 1. Get collection memberships for these products to check for collection-based rules
+  const pCollRes = await admin.graphql(
+    `#graphql
+    query getProductCollections($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on Product {
+          id
+          collections(first: 50) {
+            edges { node { id } }
+          }
+        }
+      }
+    }`,
+    { variables: { ids: productIds } }
+  );
+  
+  const pCollJson: any = await pCollRes.json();
+  const productCollectionMap: Record<string, string[]> = {};
+  const allRelatedCollectionIds = new Set<string>();
+
+  pCollJson.data?.nodes?.forEach((node: any) => {
+    if (node) {
+      const cIds = node.collections?.edges.map((e: any) => e.node.id) || [];
+      productCollectionMap[node.id] = cIds;
+      cIds.forEach((id: string) => allRelatedCollectionIds.add(id));
+    }
+  });
+
+  // 2. Fetch all relevant rules from DB (Product-specific + Collection-specific)
+  const [productRules, collectionRules] = await Promise.all([
+    db.priceListItem.findMany({
+      where: { 
+        productId: { in: productIds },
+        priceList: { shopId: shopId }
+      },
+      include: { priceList: true }
+    }),
+    db.priceListItem.findMany({
+      where: { 
+        collectionId: { in: Array.from(allRelatedCollectionIds) },
+        priceList: { shopId: shopId }
+      },
+      include: { priceList: true }
+    })
+  ]);
+
+  // 3. Format metafield values per product
+  const productMetafields = productIds.map(pId => {
+    const directRules = productRules.filter(r => r.productId === pId);
+    
+    // Get rules from collections this product belongs to
+    const productColls = productCollectionMap[pId] || [];
+    const relatedCollRules = collectionRules.filter(r => r.collectionId && productColls.includes(r.collectionId));
+
+    // Combined rules for the "tier_rules" metafield
+    const combinedRules = [...directRules, ...relatedCollRules].map(r => ({
+      tag: r.priceList.customerTag,
+      variantId: r.variantId, // Might be null for collection rules, which is handled in run.ts
+      minQuantity: r.minQuantity,
+      discountType: r.discountType,
+      price: parseFloat(r.price.toString())
+    }));
+
+    return {
+      ownerId: pId,
+      namespace: "b2b_app",
+      key: "tier_rules",
+      type: "json",
+      value: JSON.stringify(combinedRules)
+    };
+  });
+
+  // 4. Batch sync to Shopify
+  const chunkSize = 25;
+  for (let i = 0; i < productMetafields.length; i += chunkSize) {
+    const chunk = productMetafields.slice(i, i + chunkSize);
+    const response = await admin.graphql(
+      `#graphql
+      mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) {
+          userErrors { field message }
+        }
+      }`,
+      { variables: { metafields: chunk } }
+    );
+    const result = await response.json();
+    if (result.data?.metafieldsSet?.userErrors?.length > 0) {
+      console.error("Metafield Sync Error:", result.data.metafieldsSet.userErrors);
+    }
+  }
+}
 
 /**
  * LOADER
@@ -19,8 +119,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const searchTerm = url.searchParams.get("query") || "";
   const offerId = url.searchParams.get("offerId");
 
+  let products: any[] = [];
+  let collections: any[] = [];
+
   try {
-    const [pLists, pItems] = await Promise.all([
+    const [pLists, pItems, cTagRes] = await Promise.all([
       db.priceList.findMany({
         where: { shopId: session.shop, category: "WHOLESALE" },
         include: { items: true },
@@ -28,41 +131,35 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }),
       db.priceListItem.findMany({
         where: { priceList: { shopId: session.shop, category: "WHOLESALE" } }
-      })
+      }),
+      admin.graphql(`#graphql
+        query getCustomerTags {
+          customers(first: 250) { edges { node { tags } } }
+        }
+      `).catch(() => null)
     ]);
 
-    let products: any[] = [];
-    let collections: any[] = [];
-
-    // If we are editing an offer, surgically fetch the titles of its included products or collections
+    // Fetch product/collection titles if editing an existing offer
     if (offerId && offerId !== "new") {
       const offerItems = pItems.filter((i: any) => i.priceListId === offerId);
-      
-      // Products
       const uniqueProductIds = Array.from(new Set(offerItems.map((i: any) => i.productId).filter(Boolean)));
       if (uniqueProductIds.length > 0) {
         const pRes = await admin.graphql(
           `#graphql
            query getProductsByIds($ids: [ID!]!) {
-             nodes(ids: $ids) {
-               ... on Product { id title }
-             }
+             nodes(ids: $ids) { ... on Product { id title } }
            }`,
           { variables: { ids: uniqueProductIds } }
         );
         const pJson: any = await pRes.json();
         products = pJson.data?.nodes?.filter(Boolean).map((node: any) => ({ node })) || [];
       }
-
-      // Collections
       const uniqueCollectionIds = Array.from(new Set(offerItems.map((i: any) => i.collectionId).filter(Boolean)));
       if (uniqueCollectionIds.length > 0) {
         const cRes = await admin.graphql(
           `#graphql
            query getCollectionsByIds($ids: [ID!]!) {
-             nodes(ids: $ids) {
-               ... on Collection { id title }
-             }
+             nodes(ids: $ids) { ... on Collection { id title } }
            }`,
           { variables: { ids: uniqueCollectionIds } }
         );
@@ -71,12 +168,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }
     }
 
-    const usage = await checkUsage(session.shop);
+    const shopifyTags = new Set<string>();
+    if (cTagRes) {
+      const cJson: any = await cTagRes.json();
+      cJson?.data?.customers?.edges?.forEach((e: any) =>
+        e.node.tags.forEach((t: string) => shopifyTags.add(t))
+      );
+    }
+    const dbTags = pLists.map((l: any) => l.customerTag).filter(Boolean);
+    const uniqueTags = Array.from(new Set([...dbTags, ...Array.from(shopifyTags)]));
+    if (!uniqueTags.includes("ALL")) uniqueTags.unshift("ALL");
 
-    return { products, collections, priceLists: pLists, priceItems: pItems, searchTerm, usage };
+    const usage = await checkUsage(session.shop);
+    return { products, collections, priceLists: pLists, priceItems: pItems, searchTerm, usage, uniqueTags };
   } catch (error) {
     console.error("Loader fetch error:", error);
-    return { products: [], collections: [], priceLists: [], priceItems: [], searchTerm, error: "Network or API error" };
+    return { products: [], collections: [], priceLists: [], priceItems: [], searchTerm, error: "Network or API error", uniqueTags: ["ALL"] };
   }
 };
 
@@ -85,7 +192,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
  * Handles Create, Update, and Delete operations for named Offers (PriceLists)
  */
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const actionType = formData.get("actionType");
 
@@ -156,10 +263,64 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           })
         ]);
       }
-    }
- else if (actionType === "deleteOffer") {
+
+      // --- SYNC TO METAFIELDS ---
+      let productIdsToSync = [...selectedProductIds];
+      
+      // If collection offers, fetch all products in those collections
+      for (const collectionId of selectedCollectionIds) {
+        const response = await admin.graphql(
+          `#graphql
+          query getProductsInCollection($id: ID!) {
+            collection(id: $id) {
+              products(first: 250) {
+                edges { node { id } }
+              }
+            }
+          }`,
+          { variables: { id: collectionId } }
+        );
+        const result: any = await response.json();
+        const pIds = result.data?.collection?.products?.edges.map((e: any) => e.node.id) || [];
+        productIdsToSync = Array.from(new Set([...productIdsToSync, ...pIds]));
+      }
+
+      await syncProductsMetafields(admin, session.shop, productIdsToSync);
+      // --------------------------
+
+    } else if (actionType === "deleteOffer") {
       const offerId = formData.get("offerId") as string;
+      
+      // Find affected products before deleting
+      const affectedItems = await db.priceListItem.findMany({
+        where: { priceListId: offerId },
+        select: { productId: true, collectionId: true }
+      });
+
+      let productIdsToSync = affectedItems.map(i => i.productId).filter(Boolean) as string[];
+      const collectionIds = affectedItems.map(i => i.collectionId).filter(Boolean) as string[];
+
+      for (const collectionId of collectionIds) {
+        const response = await admin.graphql(
+          `#graphql
+          query getProductsInCollection($id: ID!) {
+            collection(id: $id) {
+              products(first: 250) {
+                edges { node { id } }
+              }
+            }
+          }`,
+          { variables: { id: collectionId } }
+        );
+        const result: any = await response.json();
+        const pIds = result.data?.collection?.products?.edges.map((e: any) => e.node.id) || [];
+        productIdsToSync = Array.from(new Set([...productIdsToSync, ...pIds]));
+      }
+
       await db.priceList.delete({ where: { id: offerId } });
+      
+      // Sync after delete to clear rules
+      await syncProductsMetafields(admin, session.shop, productIdsToSync);
     }
   } catch (error: any) {
     console.error("Action error:", error);
@@ -169,7 +330,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function WholesaleOffersPage() {
-  const { products: fetchedProducts, collections: fetchedCollections, priceLists, priceItems, searchTerm, usage } = useLoaderData<typeof loader>();
+  const { products: fetchedProducts, collections: fetchedCollections, priceLists, priceItems, searchTerm, usage, uniqueTags } = useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
@@ -181,8 +342,7 @@ export default function WholesaleOffersPage() {
   
   // Builder state (Figure 2 Form)
   const [offerName, setOfferName] = useState("");
-  const [customerTag, setCustomerTag] = useState("");
-  const [showTagDropdown, setShowTagDropdown] = useState(false);
+  const [customerTag, setCustomerTag] = useState("ALL");
   const [selectedEntries, setSelectedEntries] = useState<any[]>([]); // Array of {id, title}
   const [rules, setRules] = useState<any[]>([{ tempId: 'initial', minQuantity: 1, discountType: 'PERCENTAGE', price: 0 }]);
   const [hasChanges, setHasChanges] = useState(false);
@@ -226,7 +386,7 @@ export default function WholesaleOffersPage() {
       }
     } else if (offerId === "new") {
       setOfferName("");
-      setCustomerTag("");
+      setCustomerTag("ALL");
       setSelectedEntries([]);
       setRules([{ tempId: Date.now(), minQuantity: 1, discountType: 'PERCENTAGE', price: 0 }]);
       setHasChanges(false);
@@ -545,105 +705,17 @@ export default function WholesaleOffersPage() {
                     </div>
                 </div>
 
-                {/* 4. Customer Tags with Autocomplete */}
-                <div style={{ ...formCardStyle, position: "relative" }}>
-                    <label style={labelStyle}>Customer Tags</label>
-                    <p style={subLabelStyle}>Offer will only apply to customers matching these tags (Comma separated)</p>
-                    <input 
-                        type="text" 
-                        value={customerTag} 
-                        onFocus={() => setShowTagDropdown(true)}
-                        onBlur={() => setTimeout(() => setShowTagDropdown(false), 200)}
-                        onChange={(e) => { 
-                            setCustomerTag(e.target.value); 
-                            setHasChanges(true);
-                            setShowTagDropdown(true);
-                        }} 
-                        style={inputStyle} 
-                        placeholder="e.g. Wholesale, VIP" 
-                    />
-                    
-                    {/* Autocomplete Dropdown */}
-                    {showTagDropdown && (
-                        <div style={{
-                            position: "absolute",
-                            top: "100%",
-                            left: "24px",
-                            right: "24px",
-                            background: "white",
-                            border: "1px solid #ddd",
-                            borderRadius: "8px",
-                            boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-                            zIndex: 1000,
-                            maxHeight: "200px",
-                            overflowY: "auto",
-                            marginTop: "4px"
-                        }}>
-                            {Array.from(new Set(priceLists.map((l: any) => l.customerTag)))
-                                .filter(tag => {
-                                    const lastPart = customerTag.split(',').pop()?.trim().toLowerCase() || "";
-                                    return tag.toLowerCase().includes(lastPart) && tag.toLowerCase() !== lastPart;
-                                })
-                                .map((tag: any) => (
-                                    <div 
-                                        key={tag}
-                                        onClick={() => {
-                                            const parts = customerTag.split(',').map(t => t.trim());
-                                            parts.pop(); // remove last typed part
-                                            if (!parts.includes(tag)) {
-                                                const newVal = [...parts, tag].filter(t => t).join(', ');
-                                                setCustomerTag(newVal + (newVal ? ", " : ""));
-                                                setHasChanges(true);
-                                            }
-                                            setShowTagDropdown(false);
-                                        }}
-                                        style={{
-                                            padding: "10px 15px",
-                                            cursor: "pointer",
-                                            borderBottom: "1px solid #f0f0f0",
-                                            fontSize: "0.9em",
-                                            color: "#202223",
-                                            transition: "background 0.2s"
-                                        }}
-                                        onMouseEnter={(e: any) => e.target.style.background = "#f4f6f8"}
-                                        onMouseLeave={(e: any) => e.target.style.background = "none"}
-                                    >
-                                        🏷️ {tag}
-                                    </div>
-                                ))}
-                        </div>
-                    )}
-
-                    {/* Quick Badge Suggestions */}
-                    {priceLists.length > 0 && (
-                        <div style={{ marginTop: "12px" }}>
-                            <p style={{ fontSize: "0.8em", color: "#666", marginBottom: "8px" }}>Recently used tags:</p>
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                                {Array.from(new Set(priceLists.map((l: any) => l.customerTag))).slice(0, 5).map((tag: any) => (
-                                    <button 
-                                        key={tag}
-                                        type="button"
-                                        onClick={() => {
-                                            const current = customerTag.split(',').map(t => t.trim()).filter(t => t);
-                                            if (!current.includes(tag)) {
-                                                setCustomerTag(current.length > 0 ? [...current, tag].join(', ') + ", " : tag + ", ");
-                                                setHasChanges(true);
-                                            }
-                                        }}
-                                        style={{
-                                            ...tagStyle,
-                                            cursor: "pointer",
-                                            border: "1px solid #ddd",
-                                            background: "#f9f9f9",
-                                            fontWeight: "normal"
-                                        }}
-                                    >
-                                        + {tag}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-                    )}
+                {/* 4. Customer Tag Combobox */}
+                <div style={formCardStyle}>
+                    <label style={labelStyle}>Customer Tag</label>
+                    <p style={subLabelStyle}>Offer will only apply to customers with this tag</p>
+                    <div style={{ marginTop: "10px" }}>
+                      <TagCombobox
+                        value={customerTag || "ALL"}
+                        onChange={(val) => { setCustomerTag(val); setHasChanges(true); }}
+                        availableTags={uniqueTags?.length ? uniqueTags : ["ALL"]}
+                      />
+                    </div>
                 </div>
 
                 {/* Save Footer */}

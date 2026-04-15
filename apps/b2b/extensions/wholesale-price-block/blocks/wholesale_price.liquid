@@ -1,19 +1,21 @@
-<div id="b2b-pricing-wrapper" style="display: none; margin: 15px 0;">
-  <!-- Wholesale Exclusive Price -->
-  <div id="wholesale-price-container" style="display: none; padding: 15px; border: 2px dashed #008060; border-radius: 8px; background-color: #f6fdf9; margin-bottom: 10px;">
-    <span style="display: block; font-size: 0.9em; color: #008060; font-weight: bold; text-transform: uppercase; margin-bottom: 5px;">
-      Exclusive Wholesale Price
-    </span>
-    <span id="wholesale-price-value" style="font-size: 1.5em; color: #008060; font-weight: 800;"></span>
-    <p id="wholesale-price-tag" style="margin: 5px 0 0; font-size: 0.8em; color: #666;"></p>
-  </div>
+<div id="b2b-pricing-wrapper" style="display: none; margin: 20px 0; font-family: inherit;">
 
   <!-- Tier Pricing Table -->
-  <div id="tier-pricing-container" style="display: none; padding: 15px; border: 1px solid #e1e1e1; border-radius: 8px; background-color: #ffffff;">
-    <span style="display: block; font-size: 0.9em; color: #202223; font-weight: bold; text-transform: uppercase; margin-bottom: 10px;">
-      Volume Discounts (Tier Pricing)
-    </span>
+  <div id="tier-pricing-container" style="display: none; padding: 20px; border: 1px solid #e1e1e1; border-radius: 12px; background-color: #ffffff; box-shadow: 0 2px 4px rgba(0,0,0,0.03);">
+    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 15px;">
+        <span style="font-size: 1em; color: #1a1c1d; font-weight: 700;">Volume Discounts</span>
+        <span style="font-size: 0.8em; color: #6d7175; font-weight: normal;">(Save more with quantity)</span>
+    </div>
     <div id="tier-pricing-table"></div>
+  </div>
+
+  <!-- Wholesale Offers Table -->
+  <div id="wholesale-offers-container" style="display: none; padding: 20px; border: 1px solid #008060; border-radius: 12px; background-color: #ffffff; box-shadow: 0 4px 6px rgba(0,128,96,0.05); margin-top: 15px;">
+    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 15px;">
+        <span style="font-size: 1em; color: #008060; font-weight: 700;">Wholesale Offers</span>
+        <span style="font-size: 0.8em; color: #6d7175; font-weight: normal;">(Special discounts for you)</span>
+    </div>
+    <div id="wholesale-offers-table"></div>
   </div>
 </div>
 
@@ -91,33 +93,59 @@
     }
 
     // Priority 2: Scan document based on text content
-    const elements = document.querySelectorAll('span, div, p');
+    const elements = document.querySelectorAll('.price-item--regular, .product__price .price, .price, span, div, p');
     for (const el of Array.from(elements)) {
-      if (el.children.length === 0 && el.innerText.includes(currentTextPrice)) {
-        if (el.className.toLowerCase().includes('price') || el.className.toLowerCase().includes('money')) {
+      if (el.children.length === 0 && (el.innerText.includes(currentTextPrice) || el.innerText.includes(formatMoney(currentTextPrice).replace(/[^0-9.]/g, '')))) {
+        if (el.className.toLowerCase().includes('price') || el.className.toLowerCase().includes('money') || el.closest('.price')) {
+          console.log('[B2B-DEBUG] Found Price Element:', el);
           return el;
         }
       }
     }
+    console.warn('[B2B-DEBUG] Could not find price element for:', currentTextPrice);
     return null;
   }
 
   function setupDOMListeners() {
-    // Find quantity input
-    quantityInput = document.querySelector('form[action^="/cart"] input[name="quantity"]') || 
-                    document.querySelector('.quantity__input') ||
-                    document.querySelector('[name="quantity"]');
+    // Delegation for direct input/typing
+    document.addEventListener('input', (e) => {
+        const target = e.target;
+        if (target && (target.name === 'quantity' || target.classList.contains('quantity__input'))) {
+            console.log('[B2B-DEBUG] Manual input detected:', target.value);
+            quantityInput = target;
+            updatePricingUI(getCurrentVariantId());
+        }
+    });
+
+    document.addEventListener('change', (e) => {
+        const target = e.target;
+        if (target && (target.name === 'quantity' || target.classList.contains('quantity__input'))) {
+            console.log('[B2B-DEBUG] Change detected:', target.value);
+            quantityInput = target;
+            updatePricingUI(getCurrentVariantId());
+        }
+    });
     
-    if (quantityInput) {
-      quantityInput.addEventListener('input', () => updatePricingUI(getCurrentVariantId()));
-      quantityInput.addEventListener('change', () => updatePricingUI(getCurrentVariantId()));
-      
-      // Also listen to plus/minus buttons near it
-      const qtyContainer = quantityInput.parentElement;
-      if (qtyContainer) {
-          qtyContainer.addEventListener('click', () => { setTimeout(() => updatePricingUI(getCurrentVariantId()), 50); });
-      }
-    }
+    // Delegated Click for +/- buttons
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('.quantity__button, [name="minus"], [name="plus"], .qty-btn');
+        if (btn) {
+            console.log('[B2B-DEBUG] Qty button clicked');
+            setTimeout(() => {
+                const parent = btn.closest('quantity-input') || btn.closest('.quantity') || btn.parentElement;
+                const relativeInput = parent ? parent.querySelector('input[name="quantity"], .quantity__input') : null;
+                
+                if (relativeInput) {
+                    quantityInput = relativeInput;
+                    console.log('[B2B-DEBUG] Found relative input from button:', relativeInput.value);
+                } else {
+                    const inputs = document.querySelectorAll('input[name="quantity"], .quantity__input');
+                    for (const input of inputs) if (input.offsetWidth > 0) quantityInput = input;
+                }
+                updatePricingUI(getCurrentVariantId());
+            }, 300);
+        }
+    });
   }
 
   function getCurrentVariantId() {
@@ -133,11 +161,26 @@
     if (!b2bData) return;
 
     const wrapper = document.getElementById('b2b-pricing-wrapper');
-    const wsContainer = document.getElementById('wholesale-price-container');
+    const wsContainerTable = document.getElementById('wholesale-offers-container');
     const tierContainer = document.getElementById('tier-pricing-container');
     const tierTableDiv = document.getElementById('tier-pricing-table');
 
-    if (!wrapper || !wsContainer || !tierContainer || !tierTableDiv) return;
+    if (!wrapper || !wsContainerTable || !tierContainer || !tierTableDiv) {
+        console.error('[B2B-DEBUG] Missing DOM elements!', { wrapper, wsContainerTable, tierContainer, tierTableDiv });
+        return;
+    }
+
+    // Dynamic re-find quantity input to stay fresh
+    if (!quantityInput || !document.body.contains(quantityInput)) {
+        const findQuantityInput = () => {
+            const inputs = document.querySelectorAll('input[name="quantity"], .quantity__input');
+            for (const input of inputs) {
+                if (input.offsetWidth > 0) return input;
+            }
+            return inputs[0]; 
+        };
+        quantityInput = findQuantityInput();
+    }
 
     // Remove brief hide to avoid flicker during aggressive polling
     // wsContainer.style.display = 'none';
@@ -150,7 +193,7 @@
       {% endfor %}
     };
     const currentPrice = variants[variantId] || {{ product.price | divided_by: 100.0 }};
-    console.log('[B2B-DEBUG] updatePricingUI RUNNING! VariantId:', variantId, 'Price:', currentPrice);
+    console.log('[B2B-DEBUG] updatePricingUI RUNNING! VariantId:', variantId, 'Price:', currentPrice, 'Qty:', quantityInput ? quantityInput.value : 'N/A');
     
     // Auto-detect theme price element again if wiped by theme JS
     if (window.themePriceElement && !document.body.contains(window.themePriceElement)) {
@@ -168,69 +211,107 @@
     const currentQty = quantityInput ? parseInt(quantityInput.value) || 1 : 1;
     let hasVisibleRules = false;
     let bestApplicableRule = null;
+    
+    // 1. COLLECT ALL RULES AND FIND THE TRUE WINNER (LOWEST PRICE)
+    const allApplicableRules = [];
+    
+    // Wholesale Rules
+    const wsRulesRaw = (b2bData.wholesaleRules || []).filter(r => !r.variantId || r.variantId === variantId);
+    wsRulesRaw.forEach((rule, idx) => {
+        const finalPrice = getCalculatedPrice(currentPrice, rule);
+        const processedRule = { ...rule, finalPrice, source: 'wholesale', originalIndex: idx };
+        if (currentQty >= rule.minQuantity) allApplicableRules.push(processedRule);
+    });
 
-    console.log('[B2B-DEBUG] b2bData snapshot:', b2bData);
-
-    // Evaluate Wholesale
-    const wsRules = b2bData.wholesaleRules
-      .filter(r => !r.variantId || r.variantId === variantId)
-      .sort((a, b) => a.minQuantity - b.minQuantity);
-      
-    console.log('[B2B-DEBUG] Filtered Wholesale Rules:', wsRules);
-
-    if (wsRules.length > 0) {
-      const firstRule = wsRules[0];
-      const finalPrice = getCalculatedPrice(currentPrice, firstRule);
-      if (currentQty >= firstRule.minQuantity) {
-          bestApplicableRule = { ...firstRule, finalPrice };
-      }
-      document.getElementById('wholesale-price-value').innerText = formatMoney(finalPrice);
-      document.getElementById('wholesale-price-tag').innerHTML = `Applied for group: <strong>${firstRule.tag}</strong> (Min Qty: ${firstRule.minQuantity})`;
-      wsContainer.style.display = 'block';
-      hasVisibleRules = true;
-    } else {
-      wsContainer.style.display = 'none';
-    }
-
-    // Evaluate Tier 
-    const tRulesRaw = b2bData.tierRules
-      .filter(r => !r.variantId || r.variantId === variantId);
-      
-    // deduplicate by keeping smallest finalPrice per minQuantity
+    // Tier Rules
+    const tRulesRaw = (b2bData.tierRules || []).filter(r => !r.variantId || r.variantId === variantId);
     let tRuleMap = {};
     tRulesRaw.forEach(rule => {
         const fp = getCalculatedPrice(currentPrice, rule);
         if (!tRuleMap[rule.minQuantity] || fp < tRuleMap[rule.minQuantity].finalPrice) {
-            tRuleMap[rule.minQuantity] = { ...rule, finalPrice: fp };
+            tRuleMap[rule.minQuantity] = { ...rule, finalPrice: fp, source: 'tier' };
         }
     });
-    
-    const tRules = Object.values(tRuleMap).sort((a, b) => a.minQuantity - b.minQuantity);
+    const tRulesProcessed = Object.values(tRuleMap);
+    tRulesProcessed.forEach(rule => {
+        if (currentQty >= rule.minQuantity) allApplicableRules.push(rule);
+    });
 
-    console.log('[B2B-DEBUG] Filtered and Deduped Tier Rules:', tRules);
+    // Find the Winner (Lowest Final Price)
+    if (allApplicableRules.length > 0) {
+        allApplicableRules.sort((a, b) => a.finalPrice - b.finalPrice);
+        bestApplicableRule = allApplicableRules[0];
+        console.log('[B2B-DEBUG] Best Price Winner found:', bestApplicableRule);
+    }
 
-    if (tRules.length > 0) {
+    // 2. RENDER WHOLESALE TABLE
+    if (wsRulesRaw.length > 0) {
+      hasVisibleRules = true;
+      const wsTableDiv = document.getElementById('wholesale-offers-table');
+      if (wsTableDiv && wsContainerTable) {
+          let wsHtml = '<table style="width:100%; text-align:left; border-collapse: collapse; font-size: 0.9em;">';
+          wsHtml += '<tr style="border-bottom: 1px solid #00806020;">';
+          wsHtml += '<th style="padding: 8px 0; color: #008060;">Buy Qty</th>';
+          wsHtml += '<th style="padding: 8px 0; color: #008060;">Price/ea</th>';
+          wsHtml += '<th style="padding: 8px 0; color: #008060;">Discount</th>';
+          wsHtml += '</tr>';
+          
+          wsRulesRaw.sort((a, b) => a.minQuantity - b.minQuantity).forEach((rule, idx) => {
+              const ruleFinalPrice = getCalculatedPrice(currentPrice, rule);
+              const ruleSavingsPercent = Math.round(((currentPrice - ruleFinalPrice) / currentPrice) * 100);
+              const isWinner = bestApplicableRule && bestApplicableRule.source === 'wholesale' && 
+                               bestApplicableRule.minQuantity === rule.minQuantity && 
+                               Math.abs(bestApplicableRule.finalPrice - ruleFinalPrice) < 0.01;
+
+              wsHtml += `<tr style="border-bottom: 1px solid #f0fdf4; transition: background 0.2s; ${isWinner ? 'background: #f0fdf4;' : ''}">`;
+              wsHtml += `<td style="padding: 12px 8px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <strong>${rule.minQuantity}+</strong> items
+                                ${isWinner ? '<span style="background: #008060; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7em; font-weight: bold; text-transform: uppercase;">Matched</span>' : ''}
+                            </div>
+                         </td>`;
+              wsHtml += `<td style="padding: 12px 8px; font-weight: 600; color: #1a1c1d;">${formatMoney(ruleFinalPrice)}</td>`;
+              wsHtml += `<td style="padding: 12px 8px;"><span style="background: #e6f4ea; color: #008060; padding: 4px 10px; border-radius: 20px; font-weight: 800; font-size: 0.85em;">${ruleSavingsPercent}% OFF</span></td>`;
+              wsHtml += `</tr>`;
+          });
+          wsHtml += '</table>';
+          wsTableDiv.innerHTML = wsHtml;
+          wsContainerTable.style.display = 'block';
+      }
+    } else {
+      wsContainerTable.style.display = 'none';
+    }
+
+    // 3. RENDER TIER TABLE 
+    const tRulesOrdered = tRulesProcessed.sort((a, b) => a.minQuantity - b.minQuantity);
+    if (tRulesOrdered.length > 0) {
       let tierHtml = '<table style="width:100%; text-align:left; border-collapse: collapse; font-size: 0.9em;">';
-      tierHtml += '<tr style="border-bottom: 1px solid #eee;">';
-      tierHtml += '<th style="padding: 8px 0; color: #555;">Buy Quantity</th>';
-      tierHtml += '<th style="padding: 8px 0; color: #555;">Price/ea</th>';
+      tierHtml += '<tr style="border-bottom: 1px solid #1976d220;">';
+      tierHtml += '<th style="padding: 8px 0; color: #1976d2;">Buy Qty</th>';
+      tierHtml += '<th style="padding: 8px 0; color: #1976d2;">Price/ea</th>';
+      tierHtml += '<th style="padding: 8px 0; color: #1976d2;">Discount</th>';
       tierHtml += '</tr>';
       
-      tRules.forEach(rule => {
-          const finalPrice = rule.finalPrice;
-          if (currentQty >= rule.minQuantity) {
-             // Keeps updating to the highest matched minQuantity tier since they are sorted ascending
-             bestApplicableRule = { ...rule, finalPrice };
-          }
-          const isCurrentActive = (bestApplicableRule && bestApplicableRule.minQuantity === rule.minQuantity);
+      tRulesOrdered.forEach(rule => {
+          const ruleFinalPrice = rule.finalPrice;
+          const isWinner = bestApplicableRule && bestApplicableRule.source === 'tier' && 
+                           bestApplicableRule.minQuantity === rule.minQuantity &&
+                           Math.abs(bestApplicableRule.finalPrice - ruleFinalPrice) < 0.01;
           
-          tierHtml += `<tr style="border-bottom: 1px solid #f9f9f9; ${isCurrentActive ? 'background:#e3f2fd;' : ''}">`;
-          tierHtml += `<td style="padding: 8px 8px;"><strong>${rule.minQuantity}+</strong> items ${isCurrentActive ? '<span style="color:#1976d2; font-size:0.8em; font-weight:bold;">(Active)</span>' : ''}</td>`;
-          tierHtml += `<td style="padding: 8px 8px;">${formatMoney(finalPrice)}</td>`;
+          const savingsPercent = Math.round(((currentPrice - ruleFinalPrice) / currentPrice) * 100);
+
+          tierHtml += `<tr style="border-bottom: 1px solid #f0f4f8; transition: background 0.2s; ${isWinner ? 'background:#e3f2fd;' : ''}">`;
+          tierHtml += `<td style="padding: 12px 8px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <strong>${rule.minQuantity}+</strong> items
+                            ${isWinner ? '<span style="background: #1976d2; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7em; font-weight: bold; text-transform: uppercase;">Active</span>' : ''}
+                        </div>
+                      </td>`;
+          tierHtml += `<td style="padding: 12px 8px; font-weight: 600; color: #1a1c1d;">${formatMoney(ruleFinalPrice)}</td>`;
+          tierHtml += `<td style="padding: 12px 8px;"><span style="background: #e3f2fd; color: #1976d2; padding: 4px 10px; border-radius: 20px; font-weight: 800; font-size: 0.85em;">${savingsPercent}% OFF</span></td>`;
           tierHtml += `</tr>`;
       });
       tierHtml += '</table>';
-      
       tierTableDiv.innerHTML = tierHtml;
       tierContainer.style.display = 'block';
       hasVisibleRules = true;
@@ -241,10 +322,11 @@
     console.log('[B2B-DEBUG] hasVisibleRules Result:', hasVisibleRules);
 
     if (hasVisibleRules) {
-      wrapper.style.display = 'block';
+      wrapper.style.setProperty('display', 'block', 'important');
+      console.log('[B2B-DEBUG] Wrapper shown (display: block)');
     } else {
       wrapper.style.display = 'none';
-      console.log('[B2B-DEBUG] Hiding wrapper entirely because no rules matched this variant!');
+      console.log('[B2B-DEBUG] Wrapper hidden (no rules)');
     }
 
     // 3. OVERRIDE THEME PRICE VISUALLY (ANTI-FLICKER PROXY STRATEGY)
@@ -254,6 +336,7 @@
         if (proxyEl && proxyEl.id !== 'b2b-proxy-price') proxyEl = null;
 
         if (bestApplicableRule) {
+             console.log('[B2B-DEBUG] Applying Discount! Rule:', bestApplicableRule);
              // Activate CSS shield to force the Theme's original element to be "Invisible"
              if (!antiFlicker) {
                  const section = window.themePriceElement.closest('[id^="shopify-section"]');
@@ -287,9 +370,11 @@
 
              const formattedTotal = formatMoney(bestApplicableRule.finalPrice * currentQty);
              proxyEl.innerHTML = `
-                <div style="display: flex; flex-direction: column;">
-                   <span style="color: #d9534f; font-weight: bold; font-size: 1.1em;">${formatMoney(bestApplicableRule.finalPrice)} / ea</span>
-                   <span style="color: #999; font-size: 0.85em;">Total: ${formattedTotal} <del>${formatMoney(currentPrice * currentQty)}</del></span>
+                <div style="display: flex; flex-direction: column; gap: 2px; margin-top:-.5rem">
+                   <div style="display: flex; align-items: baseline; gap: 10px;">
+                      <span style="color: #d9534f; font-weight: bold; font-size: 2.8rem; line-height: 1;">${formatMoney(bestApplicableRule.finalPrice)}</span>
+                      <span style="color: #999; text-decoration: line-through; font-size: 1.8rem;">${formatMoney(currentPrice)}</span>
+                   </div>
                 </div>
              `;
         } else {
