@@ -68,7 +68,8 @@
     "@shopify/plugin-cloudflare"
   ],
   "overrides": {
-    "p-map": "^4.0.0"
+    "p-map": "^4.0.0",
+    "graphql": "16.13.2"
   },
   "author": "trthtruongnc"
 }

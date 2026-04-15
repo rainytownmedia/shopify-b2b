@@ -87,7 +87,7 @@ export function run(input: RunInput): FunctionRunResult {
       discountApplicationStrategy: DiscountApplicationStrategy.First,
       discounts: [
         {
-          value: value,
+          // @ts-ignore: Bypassing local typegen mismatch for Order Discount schema
           targets: [
             {
               orderSubtotal: {
@@ -95,6 +95,7 @@ export function run(input: RunInput): FunctionRunResult {
               }
             }
           ],
+          value: value,
           message: bestRule.name || "B2B Discount"
         }
       ]

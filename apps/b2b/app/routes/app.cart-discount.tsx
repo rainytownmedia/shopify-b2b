@@ -37,54 +37,207 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return { rules, usage, uniqueTags };
 };
 
+type SyncResult = {
+  cartRulesSynced: boolean;
+  rulesCount: number;
+  automaticDiscountCreated: boolean;
+  automaticDiscountGid: string | null;
+  functionFound: boolean;
+  functionId: string | null;
+  error: string | null;
+};
+
 /**
  * SYNC HELPER
- * Aggregates all active cart discounts and syncs to Shopify Shop Metafield
+ * Aggregates all active cart discounts, syncs to Shop Metafield,
+ * and ensures an Automatic Discount exists in Shopify linked to the Function.
+ *
+ * Shopify Functions ONLY run when there is an active DiscountAutomaticApp node
+ * that references the function. Without it, the function is never invoked.
  */
-async function syncCartDiscounts(admin: any, shopId: string) {
+async function syncCartDiscounts(admin: any, shopId: string): Promise<SyncResult> {
+  const result: SyncResult = {
+    cartRulesSynced: false,
+    rulesCount: 0,
+    automaticDiscountCreated: false,
+    automaticDiscountGid: null,
+    functionFound: false,
+    functionId: null,
+    error: null,
+  };
   // 1. Get all active rules for this shop
   const activeRules = await db.cartDiscount.findMany({
     where: { shopId: shopId, status: "active" }
   });
 
-  // 2. Format as JSON for the shop-level metafield
+  // 2. Format as JSON for the shop-level metafield (what the function reads)
+  result.rulesCount = activeRules.length;
+  console.error(`[B2B_CART_SYNC] Found ${activeRules.length} active rule(s) for shop ${shopId}`);
   const cartRules = activeRules.map(r => ({
-      id: r.id,
-      name: r.name,
-      tag: r.customerTag,
-      minSubtotal: parseFloat((r.minSubtotal || 0).toString()),
-      discountType: r.discountType,
-      value: parseFloat(r.value.toString())
+    id: r.id,
+    name: r.name,
+    tag: r.customerTag,
+    minSubtotal: parseFloat((r.minSubtotal || 0).toString()),
+    discountType: r.discountType,
+    value: parseFloat(r.value.toString())
   }));
 
-  // 3. Sync to Shopify Shop Metafield
-  // We use shop-level metafield (ownerId is not needed for Shop metafields via metafieldsSet if we use the Shop GID)
-  // First get the Shop GID
-  const shopRes = await admin.graphql(`#graphql query { shop { id } }`);
-  const shopJson: any = await shopRes.json();
-  const shopGid = shopJson.data?.shop?.id;
+  // 3. Get Shop GID + existing discount GID metafield in one call
+  const shopInfoRes = await admin.graphql(`#graphql
+    query {
+      shop {
+        id
+        discountGidMeta: metafield(namespace: "b2b_app", key: "cart_discount_gid") {
+          value
+        }
+      }
+    }
+  `);
+  const shopInfoJson: any = await shopInfoRes.json();
+  const shopGid: string = shopInfoJson.data?.shop?.id;
+  const existingDiscountGid: string | null = shopInfoJson.data?.shop?.discountGidMeta?.value ?? null;
 
-  if (shopGid) {
-    await admin.graphql(
+  if (!shopGid) {
+    result.error = "Could not retrieve shop GID";
+    console.error("[B2B_CART_SYNC] Could not retrieve shop GID.");
+    return result;
+  }
+
+  console.error(`[B2B_CART_SYNC] Shop GID: ${shopGid} | Existing discount GID: ${existingDiscountGid ?? "none"}`);
+
+  // 4. Sync cart_rules to shop metafield (function reads this)
+  const metafieldPayload: any[] = [{
+    ownerId: shopGid,
+    namespace: "b2b_app",
+    key: "cart_rules",
+    type: "json",
+    value: JSON.stringify(cartRules)
+  }];
+
+  const metaSyncRes = await admin.graphql(
+    `#graphql
+    mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        userErrors { field message }
+      }
+    }`,
+    { variables: { metafields: metafieldPayload } }
+  );
+  const metaSyncJson: any = await metaSyncRes.json();
+  const metaErrors = metaSyncJson.data?.metafieldsSet?.userErrors ?? [];
+  if (metaErrors.length > 0) {
+    result.error = `Metafield sync errors: ${JSON.stringify(metaErrors)}`;
+    console.error(`[B2B_CART_SYNC] Metafield errors:`, metaErrors);
+  } else {
+    result.cartRulesSynced = true;
+    console.error(`[B2B_CART_SYNC] cart_rules metafield synced OK (${activeRules.length} rules)`);
+  }
+
+  // 5. Ensure an Automatic Discount exists for this Function.
+  //    Without this, Shopify will never invoke the function.
+  if (!existingDiscountGid) {
+    // 5a. Find the functionId by querying shopify functions
+    const funcRes = await admin.graphql(`#graphql
+      query {
+        shopifyFunctions(first: 25) {
+          nodes {
+            id
+            title
+            apiType
+            app { handle }
+          }
+        }
+      }
+    `);
+    const funcJson: any = await funcRes.json();
+    const functions: any[] = funcJson.data?.shopifyFunctions?.nodes ?? [];
+
+    // Match by apiType  and the function handle in the extension toml
+    console.error(`[B2B_CART_SYNC] Available functions: ${JSON.stringify(functions.map((f:any) => ({id: f.id, title: f.title, apiType: f.apiType, app: f.app})))}`);
+
+    const cartFunc = functions.find(
+      (f: any) =>
+        f.apiType === "order_discounts" ||
+        // fallback: match by title
+        (f.title ?? "").toLowerCase().includes("cart discount")
+    );
+
+    if (!cartFunc) {
+      result.error = "Function 'b2b-cart-discount' not found on Shopify. Run npm run deploy first.";
+      console.error("[B2B_CART_SYNC] Could not find b2b-cart-discount function on Shopify. Make sure the extension is deployed (npm run deploy).");
+      return result;
+    }
+
+    result.functionFound = true;
+    const functionId: string = cartFunc.id;
+    result.functionId = functionId;
+    console.error(`[B2B_CART_SYNC] Creating Automatic Discount linked to function: ${functionId}`);
+
+    // 5b. Create the Automatic Discount
+    const createRes = await admin.graphql(
       `#graphql
-      mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
-        metafieldsSet(metafields: $metafields) {
+      mutation CreateAutomaticDiscount($discount: DiscountAutomaticAppInput!) {
+        discountAutomaticAppCreate(automaticAppDiscount: $discount) {
+          automaticAppDiscount {
+            discountId
+          }
           userErrors { field message }
         }
       }`,
       {
         variables: {
-          metafields: [{
-            ownerId: shopGid,
-            namespace: "b2b_app",
-            key: "cart_rules",
-            type: "json",
-            value: JSON.stringify(cartRules)
-          }]
+          discount: {
+            title: "B2B Cart Discount (Auto)",
+            functionId: functionId,
+            startsAt: new Date().toISOString(),
+            combinesWith: {
+              orderDiscounts: true,
+              productDiscounts: true,
+              shippingDiscounts: true
+            }
+          }
         }
       }
     );
+    const createJson: any = await createRes.json();
+    const userErrors = createJson.data?.discountAutomaticAppCreate?.userErrors ?? [];
+    if (userErrors.length > 0) {
+      result.error = `Error creating automatic discount: ${JSON.stringify(userErrors)}`;
+      console.error("[B2B_CART_SYNC] Error creating automatic discount:", JSON.stringify(userErrors));
+      return result;
+    }
+
+    const newDiscountGid: string = createJson.data?.discountAutomaticAppCreate?.automaticAppDiscount?.discountId;
+    if (newDiscountGid) {
+      result.automaticDiscountCreated = true;
+      result.automaticDiscountGid = newDiscountGid;
+      console.error(`[B2B_CART_SYNC] Automatic Discount created: ${newDiscountGid}`);
+      // 5c. Save the discount GID so we don't create duplicates on next sync
+      await admin.graphql(
+        `#graphql
+        mutation MetafieldsSet($metafields: [MetafieldsSetInput!]!) {
+          metafieldsSet(metafields: $metafields) {
+            userErrors { field message }
+          }
+        }`,
+        {
+          variables: {
+            metafields: [{
+              ownerId: shopGid,
+              namespace: "b2b_app",
+              key: "cart_discount_gid",
+              type: "single_line_text_field",
+              value: newDiscountGid
+            }]
+          }
+        }
+      );
+    }
+  } else {
+    result.automaticDiscountGid = existingDiscountGid;
+    console.error(`[B2B_CART_SYNC] Automatic Discount already exists: ${existingDiscountGid}. Skipping creation.`);
   }
+  return result;
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -127,8 +280,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     // --- TRIGGER SYNC ---
-    await syncCartDiscounts(admin, session.shop);
+    const syncResult = await syncCartDiscounts(admin, session.shop);
+    console.error("[B2B_CART_ACTION] Sync result:", JSON.stringify(syncResult));
     // --------------------
+    if (syncResult.error) {
+      // Don't fail the request, just log - the rule was saved OK
+      console.error(`[B2B_CART_ACTION] Sync warning: ${syncResult.error}`);
+    }
 
   } catch (error: any) {
     console.error("Cart Discount Action Error:", error);
