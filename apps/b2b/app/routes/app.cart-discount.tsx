@@ -351,6 +351,21 @@ export default function CartDiscountPage() {
     setSearchParams(next);
   };
 
+  const handleDelete = () => {
+    if (!ruleId || ruleId === "new") return;
+    if (!confirm("Are you sure you want to delete this rule?")) return;
+    
+    fetcher.submit({
+      actionType: "deleteCartDiscount",
+      id: ruleId
+    }, { method: "POST" });
+    
+    shopify.toast.show("Discount rule deleted");
+    const next = new URLSearchParams(searchParams);
+    next.delete("ruleId");
+    setSearchParams(next);
+  };
+
   const renderUsageBanner = () => {
     if (!usage) return null;
     if (usage.isLimitReached) {
@@ -464,13 +479,18 @@ export default function CartDiscountPage() {
              <input type="checkbox" checked={active} onChange={e => setActive(e.target.checked)} id="active" />
              <label htmlFor="active" style={{ cursor: "pointer" }}>Currently active</label>
           </div>
-          <div style={{ marginTop: "30px", display: "flex", justifyContent: "space-between" }}>
+          <div style={{ marginTop: "30px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <s-button variant="secondary" onClick={() => {
               const next = new URLSearchParams(searchParams);
               next.delete("ruleId");
               setSearchParams(next);
             }}>Cancel</s-button>
-            <s-button variant="primary" onClick={handleSave}>Save Rule</s-button>
+            <div style={{ display: "flex", gap: "10px" }}>
+              {isEditing && ruleId !== "new" && (
+                <s-button variant="primary" tone="critical" onClick={handleDelete}>Delete Rule</s-button>
+              )}
+              <s-button variant="primary" onClick={handleSave}>Save Rule</s-button>
+            </div>
           </div>
         </div>
       </s-page>
