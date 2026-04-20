@@ -1,0 +1,34 @@
+query RunInput {
+  cart {
+    cost {
+      subtotalAmount {
+        amount
+      }
+    }
+    lines {
+      quantity
+    }
+    deliveryGroups {
+      deliveryOptions {
+        handle
+        title
+        cost {
+          amount
+        }
+      }
+    }
+    buyerIdentity {
+      customer {
+        id
+        metafield(namespace: "b2b_app", key: "b2b_tags") {
+          value
+        }
+      }
+    }
+  }
+  shop {
+    metafield(namespace: "b2b_app", key: "shipping_rules") {
+      value
+    }
+  }
+}

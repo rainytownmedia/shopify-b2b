@@ -1,0 +1,21 @@
+api_version = "2026-01"
+
+[[extensions]]
+name = "B2B Delivery Customization"
+handle = "b2b-delivery-customization"
+uid = "886aa9b1-21fa-1e5c-85e5-e0616b7c59d45da65cad"
+type = "function"
+description = "Hides or reorders delivery options based on customer B2B tags."
+
+  [[extensions.targeting]]
+  target = "purchase.delivery-customization.run"
+  input_query = "src/run.graphql"
+  export = "run"
+
+  [extensions.build]
+  command = ""
+  path = "dist/function.wasm"
+
+  [extensions.ui.paths]
+  create = "/"
+  details = "/"

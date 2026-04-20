@@ -77,8 +77,7 @@ export function run(input: RunInput): FunctionRunResult {
     } else {
         value = {
             fixedAmount: {
-                amount: bestRule.value.toFixed(2).toString(),
-                appliesToEachItem: false // Cart-wide fixed amount
+                amount: bestRule.value.toFixed(2).toString()
             }
         };
     }
