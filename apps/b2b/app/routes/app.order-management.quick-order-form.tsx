@@ -66,7 +66,7 @@ function QuickOrderFormEditor({ form, shopDomain, onSave, onDiscard, isSaving }:
   const [status, setStatus] = useState(form?.status || "active");
   const existing = form?.settings ? JSON.parse(form.settings) : {};
   const [colors, setColors] = useState({ ...DEFAULT_SETTINGS, ...existing });
-  const displayUrl = `https://${shopDomain}/apps/rainytownmedia-b2b/quick-order`;
+  const displayUrl = `https://${shopDomain}/apps/b2b-order/quick-order`;
   const setColor = (key: string, val: string) => setColors((c: any) => ({ ...c, [key]: val }));
 
   return (

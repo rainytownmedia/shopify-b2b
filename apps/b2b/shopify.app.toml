@@ -25,5 +25,5 @@ redirect_urls = [
 
 [app_proxy]
 url = "https://sb2b.rainytownmedia.com"
-subpath = "rainytownmedia-b2b"
+subpath = "b2b-order"
 prefix = "apps"
