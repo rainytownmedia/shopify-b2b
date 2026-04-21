@@ -13,7 +13,7 @@ api_version = "2026-04"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_customers,write_customers,read_discounts,write_discounts,read_metaobjects,write_metaobjects,read_orders,write_orders,read_products,write_products,read_delivery_customizations,write_delivery_customizations,read_payment_customizations,write_payment_customizations"
+scopes = "read_customers,read_delivery_customizations,read_discounts,read_metaobjects,read_orders,read_payment_customizations,read_products,read_themes,write_customers,write_delivery_customizations,write_discounts,write_metaobjects,write_orders,write_payment_customizations,write_products,write_themes"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
@@ -25,5 +25,5 @@ redirect_urls = [
 
 [app_proxy]
 url = "https://sb2b.rainytownmedia.com"
-subpath = "b2b-proxy"
+subpath = "b2b"
 prefix = "apps"

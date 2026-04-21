@@ -5,7 +5,7 @@ name = "B2B Payment Customization"
 handle = "b2b-payment-customization"
 uid = "fd495a53-a660-d2e2-8c71-838fb5d0430ebdab8da4"
 type = "function"
-description = "Hides payment methods based on B2B rules."
+description = "Hides or reorders payment options based on customer B2B tags and cart conditions."
 
   [[extensions.targeting]]
   target = "purchase.payment-customization.run"
@@ -13,7 +13,7 @@ description = "Hides payment methods based on B2B rules."
   export = "run"
 
   [extensions.build]
-  command = "npm run build"
+  command = ""
   path = "dist/function.wasm"
 
   [extensions.ui.paths]

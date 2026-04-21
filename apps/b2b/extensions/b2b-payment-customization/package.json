@@ -1,5 +1,5 @@
 {
-  "name": "b2b-delivery-customization",
+  "name": "b2b-payment-customization",
   "version": "0.0.1",
   "license": "UNLICENSED",
   "type": "module",
@@ -11,7 +11,6 @@
   },
   "codegen": {
     "schema": "schema.graphql",
-    "documents": "src/*.graphql",
     "generates": {
       "./generated/api.ts": {
         "plugins": [

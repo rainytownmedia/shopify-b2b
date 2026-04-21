@@ -66,7 +66,7 @@ function QuickOrderFormEditor({ form, shopDomain, onSave, onDiscard, isSaving }:
   const [status, setStatus] = useState(form?.status || "active");
   const existing = form?.settings ? JSON.parse(form.settings) : {};
   const [colors, setColors] = useState({ ...DEFAULT_SETTINGS, ...existing });
-  const displayUrl = `https://${shopDomain}/apps/quickorder`;
+  const displayUrl = `https://${shopDomain}/apps/b2b/quick-order`;
   const setColor = (key: string, val: string) => setColors((c: any) => ({ ...c, [key]: val }));
 
   return (
@@ -151,18 +151,27 @@ export default function QuickOrderFormPage() {
   const mode = searchParams.get("mode");
   const editingForm = mode && mode !== "new" ? forms.find((f: any) => f.id === mode) : null;
   const isSaving = fetcher.state !== "idle";
+  const [wasSubmitting, setWasSubmitting] = useState(false);
+
+  // Mark when starting a save/delete action
+  useEffect(() => {
+    if (fetcher.state === "submitting" || fetcher.state === "loading") {
+      setWasSubmitting(true);
+    }
+  }, [fetcher.state]);
 
   // Navigate back to list after successful save
   useEffect(() => {
-    if (fetcher.state === "idle" && fetcher.data && (fetcher.data as any).success) {
+    if (fetcher.state === "idle" && wasSubmitting && (fetcher.data as any)?.success) {
+      setWasSubmitting(false);
       const isDeleteAction = (fetcher.formData?.get("intent") as string) === "DELETE";
-      if (!isDeleteAction) {
+      if (!isDeleteAction && mode) {
         const next = new URLSearchParams(searchParams);
         next.delete("mode");
         setSearchParams(next);
       }
     }
-  }, [fetcher.state, fetcher.data, searchParams, setSearchParams]);
+  }, [fetcher.state, fetcher.data, wasSubmitting, searchParams, setSearchParams, mode]);
 
   const handleSave = (data: any) => {
     const fd = new FormData();

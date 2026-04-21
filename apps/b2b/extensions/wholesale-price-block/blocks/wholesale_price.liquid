@@ -395,7 +395,7 @@
     
     try {
       if (!b2bData) {
-          const response = await fetch(`/apps/b2b-proxy/api/proxy?product_id=${encodeURIComponent(productId)}&collection_ids=${encodeURIComponent(collectionIds.join(','))}&tags=${encodeURIComponent(customerTags)}&shop=${shop}`);
+          const response = await fetch(`/apps/b2b/api/proxy?product_id=${encodeURIComponent(productId)}&collection_ids=${encodeURIComponent(collectionIds.join(','))}&tags=${encodeURIComponent(customerTags)}&shop=${shop}`);
           b2bData = await response.json();
           window.b2bDataCache = b2bData;
       }

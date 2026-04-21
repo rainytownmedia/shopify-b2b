@@ -1,0 +1,29 @@
+query RunInput {
+  cart {
+    cost {
+      subtotalAmount {
+        amount
+      }
+    }
+    lines {
+      quantity
+    }
+    buyerIdentity {
+      customer {
+        id
+        metafield(namespace: "b2b_app", key: "b2b_tags") {
+          value
+        }
+      }
+    }
+  }
+  paymentMethods {
+    id
+    name
+  }
+  shop {
+    metafield(namespace: "b2b_app", key: "payment_rules") {
+      value
+    }
+  }
+}
