@@ -6,21 +6,24 @@ import db from "../db.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const shop = url.searchParams.get("shop");
+  
+  console.log(`[B2B-PROXY] Incoming request: ${request.url}`);
+  console.log(`[B2B-PROXY] Shop from query: ${shop}`);
 
   if (!shop) {
     return new Response("Missing shop parameter", { status: 400 });
   }
 
+  // Use unauthenticated admin to fetch data for the proxy page
+  // This bypasses strict HMAC validation which frequently fails in dev tunnels
   try {
-    // Use unauthenticated admin to fetch data for the proxy page
-    // This bypasses strict HMAC validation which frequently fails in dev tunnels
     let adminClient = null;
-  try {
-    const { admin: unauthAdmin } = await shopify.unauthenticated.admin(shop);
-    adminClient = unauthAdmin;
-  } catch (e) {
-    console.warn("Failed to initialize unauthenticated admin, proceeding without products:", e.message);
-  }
+    try {
+      const { admin: unauthAdmin } = await shopify.unauthenticated.admin(shop);
+      adminClient = unauthAdmin;
+    } catch (e) {
+      console.warn("Failed to initialize unauthenticated admin, proceeding without products:", e.message);
+    }
 
   const form = await db.quickOrderForm.findFirst({
     where: { shopId: shop, status: "active" },
