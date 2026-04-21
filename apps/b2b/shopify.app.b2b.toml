@@ -16,8 +16,8 @@ scopes = "read_customers,read_orders,read_products,write_customers,write_metaobj
 redirect_urls = [ "https://example.com/api/auth" ]
 
 [app_proxy]
-url = "https://example.com"
-subpath = "b2b"
+url = "https://sb2b.rainytownmedia.com"
+subpath = "rainytownmedia-b2b"
 prefix = "apps"
 
 [build]
