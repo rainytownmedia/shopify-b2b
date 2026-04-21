@@ -6,9 +6,6 @@ import db from "../db.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const shop = url.searchParams.get("shop");
-  
-  console.log(`[B2B-PROXY] Incoming request: ${request.url}`);
-  console.log(`[B2B-PROXY] Shop from query: ${shop}`);
 
   if (!shop) {
     return new Response("Missing shop parameter", { status: 400 });
@@ -16,14 +13,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Use unauthenticated admin to fetch data for the proxy page
   // This bypasses strict HMAC validation which frequently fails in dev tunnels
+  let adminClient;
   try {
-    let adminClient = null;
-    try {
-      const { admin: unauthAdmin } = await shopify.unauthenticated.admin(shop);
-      adminClient = unauthAdmin;
-    } catch (e) {
-      console.warn("Failed to initialize unauthenticated admin, proceeding without products:", e.message);
-    }
+    const { admin: unauthAdmin } = await shopify.unauthenticated.admin(shop);
+    adminClient = unauthAdmin;
+  } catch (e) {
+    console.error("Failed to initialize unauthenticated admin:", e);
+    return new Response("Unauthorized", { status: 401 });
+  }
 
   const form = await db.quickOrderForm.findFirst({
     where: { shopId: shop, status: "active" },
@@ -37,51 +34,42 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         <p>Please contact the store administrator.</p>
       </div>
     `;
-    return new Response(html, { headers: { "Content-Type": "application/liquid" }, status: 200 });
+    return new Response(html, { headers: { "Content-Type": "application/liquid" } });
   }
 
   const settings = JSON.parse(form.settings || "{}");
 
-  let products = [];
-  if (adminClient) {
-    try {
-      // Fetch products from Shopify GraphQL
-      const response = await adminClient.graphql(`
-      #graphql
-      query getProducts {
-        products(first: 20) {
-          edges {
-            node {
-              id
-              title
-              handle
-              featuredImage {
-                url
-              }
-              variants(first: 5) {
-                edges {
-                  node {
-                    id
-                    title
-                    price
-                    sku
-                  }
+  // Fetch products from Shopify GraphQL
+  const response = await adminClient.graphql(`
+    #graphql
+    query getProducts {
+      products(first: 20) {
+        edges {
+          node {
+            id
+            title
+            handle
+            featuredImage {
+              url
+            }
+            variants(first: 5) {
+              edges {
+                node {
+                  id
+                  title
+                  price
+                  sku
                 }
               }
             }
           }
         }
       }
-    `);
+    }
+  `);
 
-    const responseJson = await response.json();
-    products = responseJson.data?.products?.edges?.map((e: any) => e.node) || [];
-  } catch (error) {
-    console.error("GraphQL product fetch error:", error);
-    // Fallback: Continue with empty products list rather than crashing
-    products = [];
-  }
-  }
+  const responseJson = await response.json();
+  const products = responseJson.data?.products?.edges?.map((e: any) => e.node) || [];
 
   const html = `
     <div class="quick-order-wrapper" style="max-width: 1200px; margin: 40px auto; padding: 0 20px;">
@@ -192,8 +180,4 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       "Content-Type": "application/liquid",
     },
   });
-  } catch (error: any) {
-    console.error("FATAL LOADER ERROR:", error);
-    return new Response("Server error: " + error.message, { status: 500 });
-  }
 };
