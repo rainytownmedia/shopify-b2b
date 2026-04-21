@@ -17,7 +17,7 @@ redirect_urls = [ "https://example.com/api/auth" ]
 
 [app_proxy]
 url = "https://example.com"
-subpath = "b2b-proxy"
+subpath = "b2b"
 prefix = "apps"
 
 [build]
