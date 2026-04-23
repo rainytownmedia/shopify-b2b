@@ -58,19 +58,30 @@ const shopify = shopifyApp({
   hooks: {
     afterAuth: async ({ session }) => {
       shopify.registerWebhooks({ session });
-      
-      // Save the store to our Shop table
+      const before = await prisma.shop.findUnique({ where: { id: session.shop } });
+      const reactivating = Boolean(before && !before.isActive);
+
       await prisma.shop.upsert({
         where: { id: session.shop },
         create: {
           id: session.shop,
           domain: session.shop,
           isActive: true,
+          b2bTagMetafieldBackfilledAt: null,
         },
         update: {
           isActive: true,
+          ...(reactivating ? { b2bTagMetafieldBackfilledAt: null } : {}),
         },
       });
+
+      const after = await prisma.shop.findUnique({ where: { id: session.shop } });
+      if (after && !after.b2bTagMetafieldBackfilledAt) {
+        const { scheduleB2BTagMetafieldBackfill } = await import(
+          "./utils/b2b-customer-tag-metafield.server"
+        );
+        scheduleB2BTagMetafieldBackfill(session);
+      }
     },
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN

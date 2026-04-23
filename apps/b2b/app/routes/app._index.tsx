@@ -7,105 +7,115 @@ import db from "../db.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   
-     // Auto-setup the Discount Function if not already created
-  try {
-     const functionsRes = await admin.graphql(`
-        #graphql
-        query {
-           shopifyFunctions(first: 25) { edges { node { id title apiType } } }
-        }
+  // Auto-setup can be expensive; run only once per shop.
+  const autoSetupLog = await db.activityLog.findFirst({
+    where: { shopId: session.shop, action: "AUTO_SETUP_DISCOUNTS_COMPLETED" }
+  });
+
+  if (!autoSetupLog) {
+    try {
+      const functionsRes = await admin.graphql(`
+         #graphql
+         query {
+            shopifyFunctions(first: 25) { edges { node { id title apiType } } }
+         }
      `);
-     const fJson = await functionsRes.json();
-     const functions = fJson.data?.shopifyFunctions?.edges || [];
-     
-     const tierFunction = functions.find((e: any) => e.node.apiType === "product_discounts" && (e.node.title.toLowerCase().includes("tier") || e.node.title.toLowerCase().includes("b2b")))?.node;
-     const cartFunction = functions.find((e: any) => e.node.apiType === "order_discounts" && (e.node.title.toLowerCase().includes("cart") || e.node.title.toLowerCase().includes("b2b")))?.node;
+      const fJson = await functionsRes.json();
+      const functions = fJson.data?.shopifyFunctions?.edges || [];
+      
+      const tierFunction = functions.find((e: any) => e.node.apiType === "product_discounts" && (e.node.title.toLowerCase().includes("tier") || e.node.title.toLowerCase().includes("b2b")))?.node;
+      const cartFunction = functions.find((e: any) => e.node.apiType === "order_discounts" && (e.node.title.toLowerCase().includes("cart") || e.node.title.toLowerCase().includes("b2b")))?.node;
 
-     // 1. Auto-setup Tier Discount (Product)
-     if (tierFunction) {
-          const checkRes = await admin.graphql(`
+      // 1. Auto-setup Tier Discount (Product)
+      if (tierFunction) {
+        const checkRes = await admin.graphql(`
+           #graphql
+           query { discountNodes(first: 50) { edges { node { id discount { ... on DiscountAutomaticApp { title } } } } } }
+       `);
+        const checkJson = await checkRes.json();
+        const tierNode = checkJson.data?.discountNodes?.edges?.find((e: any) => e.node.discount?.title === "B2B Tier Discount")?.node;
+
+        if (!tierNode) {
+          console.log("Auto-creating B2B Tier Discount Function...");
+          await admin.graphql(`
              #graphql
-             query { discountNodes(first: 50) { edges { node { id discount { ... on DiscountAutomaticApp { title } } } } } }
-          `);
-          const checkJson = await checkRes.json();
-          const tierNode = checkJson.data?.discountNodes?.edges?.find((e: any) => e.node.discount?.title === "B2B Tier Discount")?.node;
+             mutation discountAutomaticAppCreate($automaticAppDiscount: DiscountAutomaticAppInput!) {
+               discountAutomaticAppCreate(automaticAppDiscount: $automaticAppDiscount) { userErrors { field message } }
+             }
+          `, {
+            variables: {
+              automaticAppDiscount: { 
+                title: "B2B Tier Discount", 
+                functionId: tierFunction.id, 
+                startsAt: new Date().toISOString(),
+                combinesWith: { orderDiscounts: true }
+              }
+            }
+          });
+        } else {
+          // Auto-update existing to ensure Combines With is enabled
+          await admin.graphql(`
+             #graphql
+             mutation discountAutomaticAppUpdate($id: ID!, $automaticAppDiscount: DiscountAutomaticAppInput!) {
+               discountAutomaticAppUpdate(id: $id, automaticAppDiscount: $automaticAppDiscount) { userErrors { field message } }
+             }
+          `, {
+            variables: {
+              id: tierNode.id,
+              automaticAppDiscount: { combinesWith: { orderDiscounts: true } }
+            }
+          });
+        }
+      }
 
-          if (!tierNode) {
-              console.log("Auto-creating B2B Tier Discount Function...");
-              await admin.graphql(`
-                 #graphql
-                 mutation discountAutomaticAppCreate($automaticAppDiscount: DiscountAutomaticAppInput!) {
-                   discountAutomaticAppCreate(automaticAppDiscount: $automaticAppDiscount) { userErrors { field message } }
-                 }
-              `, {
-                  variables: {
-                      automaticAppDiscount: { 
-                          title: "B2B Tier Discount", 
-                          functionId: tierFunction.id, 
-                          startsAt: new Date().toISOString(),
-                          combinesWith: { orderDiscounts: true }
-                      }
-                  }
-              });
-          } else {
-              // Auto-update existing to ensure Combines With is enabled
-              await admin.graphql(`
-                 #graphql
-                 mutation discountAutomaticAppUpdate($id: ID!, $automaticAppDiscount: DiscountAutomaticAppInput!) {
-                   discountAutomaticAppUpdate(id: $id, automaticAppDiscount: $automaticAppDiscount) { userErrors { field message } }
-                 }
-              `, {
-                  variables: {
-                      id: tierNode.id,
-                      automaticAppDiscount: { combinesWith: { orderDiscounts: true } }
-                  }
-              });
-          }
-     }
+      // 2. Auto-setup Cart Discount (Order)
+      if (cartFunction) {
+        const checkRes = await admin.graphql(`
+          #graphql
+          query { discountNodes(first: 50) { edges { node { id discount { ... on DiscountAutomaticApp { title } } } } } }
+       `);
+        const checkJson = await checkRes.json();
+        const cartNode = checkJson.data?.discountNodes?.edges?.find((e: any) => e.node.discount?.title === "B2B Cart Discount")?.node;
 
-     // 2. Auto-setup Cart Discount (Order)
-     if (cartFunction) {
-          const checkRes = await admin.graphql(`
-            #graphql
-            query { discountNodes(first: 50) { edges { node { id discount { ... on DiscountAutomaticApp { title } } } } } }
-          `);
-          const checkJson = await checkRes.json();
-          const cartNode = checkJson.data?.discountNodes?.edges?.find((e: any) => e.node.discount?.title === "B2B Cart Discount")?.node;
+        if (!cartNode) {
+          console.log("Auto-creating B2B Cart Discount Function...");
+          await admin.graphql(`
+             #graphql
+             mutation discountAutomaticAppCreate($automaticAppDiscount: DiscountAutomaticAppInput!) {
+               discountAutomaticAppCreate(automaticAppDiscount: $automaticAppDiscount) { userErrors { field message } }
+             }
+          `, {
+            variables: {
+              automaticAppDiscount: { 
+                title: "B2B Cart Discount", 
+                functionId: cartFunction.id, 
+                startsAt: new Date().toISOString(),
+                combinesWith: { productDiscounts: true }
+              }
+            }
+          });
+        } else {
+          // Auto-update existing to ensure Combines With is enabled
+          await admin.graphql(`
+             #graphql
+             mutation discountAutomaticAppUpdate($id: ID!, $automaticAppDiscount: DiscountAutomaticAppInput!) {
+               discountAutomaticAppUpdate(id: $id, automaticAppDiscount: $automaticAppDiscount) { userErrors { field message } }
+             }
+          `, {
+            variables: {
+              id: cartNode.id,
+              automaticAppDiscount: { combinesWith: { productDiscounts: true } }
+            }
+          });
+        }
+      }
 
-          if (!cartNode) {
-              console.log("Auto-creating B2B Cart Discount Function...");
-              await admin.graphql(`
-                 #graphql
-                 mutation discountAutomaticAppCreate($automaticAppDiscount: DiscountAutomaticAppInput!) {
-                   discountAutomaticAppCreate(automaticAppDiscount: $automaticAppDiscount) { userErrors { field message } }
-                 }
-              `, {
-                  variables: {
-                      automaticAppDiscount: { 
-                          title: "B2B Cart Discount", 
-                          functionId: cartFunction.id, 
-                          startsAt: new Date().toISOString(),
-                          combinesWith: { productDiscounts: true }
-                      }
-                  }
-              });
-          } else {
-              // Auto-update existing to ensure Combines With is enabled
-              await admin.graphql(`
-                 #graphql
-                 mutation discountAutomaticAppUpdate($id: ID!, $automaticAppDiscount: DiscountAutomaticAppInput!) {
-                   discountAutomaticAppUpdate(id: $id, automaticAppDiscount: $automaticAppDiscount) { userErrors { field message } }
-                 }
-              `, {
-                  variables: {
-                      id: cartNode.id,
-                      automaticAppDiscount: { combinesWith: { productDiscounts: true } }
-                  }
-              });
-          }
-     }
-  } catch (err) {
-     console.error("AutoSetup error:", err);
+      await db.activityLog.create({
+        data: { shopId: session.shop, action: "AUTO_SETUP_DISCOUNTS_COMPLETED" }
+      });
+    } catch (err) {
+      console.error("AutoSetup error:", err);
+    }
   }
 
   // Check if historical tags sync is needed

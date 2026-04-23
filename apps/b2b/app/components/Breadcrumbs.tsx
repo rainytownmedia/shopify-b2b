@@ -4,6 +4,7 @@ import { useNavigate } from "react-router";
 interface BreadcrumbItem {
   label: string;
   url?: string;
+  onClick?: () => void;
 }
 
 export function Breadcrumbs({ items }: { items: BreadcrumbItem[] }) {
@@ -31,7 +32,14 @@ export function Breadcrumbs({ items }: { items: BreadcrumbItem[] }) {
       {items.map((item, index) => (
         <React.Fragment key={index}>
           <span>/</span>
-          {item.url ? (
+          {item.onClick ? (
+            <span 
+              onClick={item.onClick} 
+              style={{ cursor: "pointer", color: "#005bd3" }}
+            >
+              {item.label}
+            </span>
+          ) : item.url ? (
             <span 
               onClick={() => navigate(item.url!)} 
               style={{ cursor: "pointer", color: "#005bd3" }}

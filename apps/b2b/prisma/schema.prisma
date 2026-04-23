@@ -47,6 +47,8 @@ model Shop {
   displayGbLimit   Float     @default(5.0) @map("display_gb_limit")
   installedAt      DateTime  @default(now()) @map("installed_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
+  /// When set, the app has backfilled b2b_app.b2b_tags for existing customers (avoid duplicate work on every OAuth)
+  b2bTagMetafieldBackfilledAt DateTime? @map("b2b_tag_metafield_backfilled_at")
   priceLists       PriceList[]
 
   @@map("shop")

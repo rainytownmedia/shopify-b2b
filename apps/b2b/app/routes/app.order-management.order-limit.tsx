@@ -4,14 +4,19 @@ import { useLoaderData, useSearchParams, useFetcher } from "react-router";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { Breadcrumbs } from "../components/Breadcrumbs";
+import { TagCombobox } from "../components/TagCombobox";
+import { getComboboxTagOptions } from "../utils/customer-tags.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  const limits = await db.orderLimit.findMany({
-    where: { shopId: session.shop },
-    orderBy: { createdAt: "desc" },
-  });
-  return { limits };
+  const [limits, uniqueTags] = await Promise.all([
+    db.orderLimit.findMany({
+      where: { shopId: session.shop },
+      orderBy: { createdAt: "desc" },
+    }),
+    getComboboxTagOptions(session.shop),
+  ]);
+  return { limits, uniqueTags };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -48,7 +53,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 type Condition = { target: string; type: string; min: string; max: string };
 
-function OrderLimitEditor({ rule, onSave, onDiscard, isSaving }: any) {
+function OrderLimitEditor({ rule, onSave, onDiscard, isSaving, availableTags }: any) {
   const [label, setLabel] = useState(rule?.label || "");
   const [status, setStatus] = useState(rule?.status || "enabled");
   const [customerType, setCustomerType] = useState(rule?.customerType || "all");
@@ -101,7 +106,14 @@ function OrderLimitEditor({ rule, onSave, onDiscard, isSaving }: any) {
           <label style={radioLabel}><input type="radio" name="ctype" checked={customerType === "tagged"} onChange={() => setCustomerType("tagged")} /> Tagged Customers</label>
         </div>
         {customerType === "tagged" && (
-          <input style={{ ...inputStyle, marginTop: "12px" }} value={customerTag} onChange={e => setCustomerTag(e.target.value)} placeholder="e.g. VIP, wholesale" />
+          <div style={{ marginTop: "12px" }}>
+            <TagCombobox
+              value={customerTag}
+              onChange={setCustomerTag}
+              availableTags={availableTags?.length ? availableTags : ["ALL"]}
+              placeholder="e.g. VIP, wholesale"
+            />
+          </div>
         )}
       </div>
 
@@ -156,7 +168,7 @@ function OrderLimitEditor({ rule, onSave, onDiscard, isSaving }: any) {
 }
 
 export default function OrderLimitPage() {
-  const { limits } = useLoaderData<typeof loader>();
+  const { limits, uniqueTags } = useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
   const fetcher = useFetcher();
 
@@ -203,7 +215,13 @@ export default function OrderLimitPage() {
       <Breadcrumbs items={[{ label: "Order Management", url: "/app/order-management" }, { label: "Order Limit" }]} />
       <s-page heading="Order Limit" back-action-url={mode ? "/app/order-management/order-limit" : "/app/order-management"}>
         {mode ? (
-          <OrderLimitEditor rule={editingRule} onSave={handleSave} onDiscard={handleDiscard} isSaving={isSaving} />
+          <OrderLimitEditor
+            rule={editingRule}
+            onSave={handleSave}
+            onDiscard={handleDiscard}
+            isSaving={isSaving}
+            availableTags={uniqueTags}
+          />
         ) : (
           <div style={{ maxWidth: "900px", margin: "0 auto", padding: "10px 20px" }}>
             <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "20px" }}>

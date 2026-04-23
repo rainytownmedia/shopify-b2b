@@ -5,6 +5,7 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { checkUsage } from "../utils/quota.server";
+import { getComboboxTagOptions } from "../utils/customer-tags.server";
 import React from "react";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 import { Banner } from "@shopify/polaris";
@@ -58,39 +59,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }
     }
 
-    const [pLists, pItems, allTagsLists] = await Promise.all([
+    const [pLists, pItems, uniqueTags] = await Promise.all([
       db.priceList.findMany({ where: { shopId: session.shop, category: "TIER" } }),
       db.priceListItem.findMany({
         where: { priceList: { shopId: session.shop, category: "TIER" } },
         include: { priceList: true }
       }),
-      db.priceList.findMany({ where: { shopId: session.shop }, select: { customerTag: true } })
+      getComboboxTagOptions(session.shop)
     ]);
-
-    let cJson: any = null;
-    try {
-      const cRes = await admin.graphql(`
-        #graphql
-        query getCustomerTags {
-          customers(first: 250) { edges { node { tags } } }
-        }
-      `);
-      cJson = await cRes.json();
-    } catch (e) {
-      console.warn("Could not fetch Shopify customers (might be missing read_customers scope)", e);
-    }
-
-    const shopifyTags = new Set<string>();
-    if (cJson?.data?.customers?.edges) {
-        cJson.data.customers.edges.forEach((e: any) => {
-            e.node.tags.forEach((t: string) => shopifyTags.add(t));
-        });
-    }
-
-    // Combine DB tags and Shopify DB tags
-    const dbTags = allTagsLists.map(l => l.customerTag);
-    const uniqueTags = Array.from(new Set([...dbTags, ...Array.from(shopifyTags)]));
-    if (!uniqueTags.includes("ALL")) uniqueTags.unshift("ALL");
 
     const usage = await checkUsage(session.shop);
 

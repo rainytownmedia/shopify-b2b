@@ -5,6 +5,7 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { checkUsage } from "../utils/quota.server";
+import { getComboboxTagOptions } from "../utils/customer-tags.server";
 import React from "react";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 import { Banner } from "@shopify/polaris";
@@ -123,7 +124,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let collections: any[] = [];
 
   try {
-    const [pLists, pItems, cTagRes] = await Promise.all([
+    const [pLists, pItems, uniqueTags] = await Promise.all([
       db.priceList.findMany({
         where: { shopId: session.shop, category: "WHOLESALE" },
         include: { items: true },
@@ -132,11 +133,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       db.priceListItem.findMany({
         where: { priceList: { shopId: session.shop, category: "WHOLESALE" } }
       }),
-      admin.graphql(`#graphql
-        query getCustomerTags {
-          customers(first: 250) { edges { node { tags } } }
-        }
-      `).catch(() => null)
+      getComboboxTagOptions(session.shop)
     ]);
 
     // Fetch product/collection titles if editing an existing offer
@@ -167,17 +164,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         collections = cJson.data?.nodes?.filter(Boolean).map((node: any) => ({ node })) || [];
       }
     }
-
-    const shopifyTags = new Set<string>();
-    if (cTagRes) {
-      const cJson: any = await cTagRes.json();
-      cJson?.data?.customers?.edges?.forEach((e: any) =>
-        e.node.tags.forEach((t: string) => shopifyTags.add(t))
-      );
-    }
-    const dbTags = pLists.map((l: any) => l.customerTag).filter(Boolean);
-    const uniqueTags = Array.from(new Set([...dbTags, ...Array.from(shopifyTags)]));
-    if (!uniqueTags.includes("ALL")) uniqueTags.unshift("ALL");
 
     const usage = await checkUsage(session.shop);
     return { products, collections, priceLists: pLists, priceItems: pItems, searchTerm, usage, uniqueTags };

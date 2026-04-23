@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "ef37db56fa6361fc606cf6036149b2b9"
-name = "Rainytownmedia B2B"
+client_id = "266c3147bebdc8b120fca5398ceae893"
+name = "Rainytownmedia B2B1"
 application_url = "https://example.com"
 embedded = true
 

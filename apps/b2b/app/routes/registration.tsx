@@ -20,13 +20,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return new Response("Missing shop parameter.", { status: 200, headers: { "Content-Type": "text/html" } });
   }
 
-  const form = await db.registrationForm.findFirst({
-    where: { shopId: shop }
-  });
+  const formId = url.searchParams.get("id");
+  let form;
+  
+  if (formId) {
+    form = await db.registrationForm.findUnique({
+      where: { id: formId }
+    });
+  } else {
+    form = await db.registrationForm.findFirst({
+      where: { shopId: shop }
+    });
+  }
 
   if (!form) {
     return new Response(
-      `<html><body><h2>App Proxy Connected!</h2><p>Wait, I didn't find a form in the database for shop: <b>${shop}</b>.</p><p>Please go to the Shopify Admin -> App -> B2B Customers & Onboarding and click "Save Form".</p></body></html>`, 
+      `<html><body><h2>Form Not Found</h2><p>Wait, I didn't find the requested form in the database for shop: <b>${shop}</b>.</p></body></html>`, 
       { status: 200, headers: { "Content-Type": "text/html" } }
     );
   }
@@ -43,7 +52,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export const action = async ({ request }: ActionFunctionArgs) => {
   const clonedRequest = request.clone();
   const formDataCopy = await clonedRequest.formData();
-  let shop = formDataCopy.get("shop") as string;
+  let shop = (formDataCopy.get("shop") as string) || (formDataCopy.get("shop_domain") as string);
+
+  if (!shop) {
+    const url = new URL(request.url);
+    shop = url.searchParams.get("shop") || "";
+  }
 
   try {
     await authenticate.public.appProxy(request);

@@ -5,57 +5,20 @@ import { Page, Layout, Card, Text, Box, BlockStack, InlineStack, Button, Badge, 
 import db from "../db.server";
 import { authenticate } from "../shopify.server";
 import { Breadcrumbs } from "../components/Breadcrumbs";
+import { syncCustomerTagInventory } from "../utils/customer-tags.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  
-  // 1. Fetch all rules and existing metadata
-  const [dbTags, priceLists, checkoutRules, cartDiscounts, regForm] = await Promise.all([
-    (db as any).customerTag.findMany({ where: { shopId: session.shop } }),
-    (db as any).priceList.findMany({ where: { shopId: session.shop }, select: { customerTag: true, name: true } }),
-    (db as any).checkoutRule.findMany({ where: { shopId: session.shop }, select: { customerTag: true, name: true } }),
-    (db as any).cartDiscount.findMany({ where: { shopId: session.shop }, select: { customerTag: true, name: true } }),
-    (db as any).registrationForm.findFirst({ where: { shopId: session.shop }, select: { customerTags: true } })
+  await syncCustomerTagInventory(session.shop);
+  const [dbTags, priceLists, checkoutRules, cartDiscounts] = await Promise.all([
+    db.customerTag.findMany({ where: { shopId: session.shop }, orderBy: { createdAt: "asc" } }),
+    db.priceList.findMany({ where: { shopId: session.shop }, select: { customerTag: true, name: true } }),
+    db.checkoutRule.findMany({ where: { shopId: session.shop }, select: { customerTag: true, name: true } }),
+    db.cartDiscount.findMany({ where: { shopId: session.shop }, select: { customerTag: true, name: true } }),
   ]);
-
-  // 2. Identify all unique tags currently in use across the app
-  const usedTagsSet = new Set<string>();
-  priceLists.forEach((p: any) => usedTagsSet.add(p.customerTag.trim()));
-  checkoutRules.forEach((c: any) => { if(c.customerTag) usedTagsSet.add(c.customerTag.trim()) });
-  cartDiscounts.forEach((d: any) => { if(d.customerTag) usedTagsSet.add(d.customerTag.trim()) });
-  if (regForm?.customerTags) {
-      regForm.customerTags.split(",").forEach((tag: string) => {
-          const trimmed = tag.trim();
-          if (trimmed) usedTagsSet.add(trimmed);
-      });
-  }
-
-  // 3. AUTO-SYNC: If any used tag is missing from the database, create it automatically
-  const existingTags = new Set(dbTags.map((t: any) => t.tag));
-  const missingTags = Array.from(usedTagsSet).filter(tag => !existingTags.has(tag));
-
-  if (missingTags.length > 0) {
-      // Use $transaction for safety when creating missing tags
-      await db.$transaction(
-          missingTags.map(tag => (db as any).customerTag.upsert({
-              where: { tag },
-              update: {},
-              create: { shopId: session.shop, tag, name: tag }
-          }))
-      );
-      // Re-fetch dbTags after sync to ensure we have the full list
-      const updatedDbTags = await (db as any).customerTag.findMany({ 
-          where: { shopId: session.shop }, 
-          orderBy: { createdAt: "asc" } 
-      });
-      return { 
-          tagInventory: buildInventory(updatedDbTags, priceLists, checkoutRules, cartDiscounts) 
-      };
-  }
-
-  return { 
-      shopId: session.shop,
-      tagInventory: buildInventory(dbTags, priceLists, checkoutRules, cartDiscounts) 
+  return {
+    shopId: session.shop,
+    tagInventory: buildInventory(dbTags, priceLists, checkoutRules, cartDiscounts),
   };
 };
 
@@ -97,45 +60,44 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (!tag) return { error: "Tag is required" };
 
       // 1. Handle Metadata & Uniqueness (Source of Truth)
-      const existing = await (db as any).customerTag.findUnique({ where: { tag } });
+      const existing = await db.customerTag.findUnique({ where: { tag } });
       const hasId = id && id !== "null" && id !== "undefined" && id !== "";
 
       if (hasId) {
-          const current = await (db as any).customerTag.findUnique({ where: { id } });
+          const current = await db.customerTag.findUnique({ where: { id } });
           if (!current) return { error: "Tag not found in database." };
 
           if (existing && existing.id !== id) {
               // MERGE CASE: Renaming 'tag,' to 'tag' where 'tag' already exists
               // Delete the old one and keep the existing one (merging metadata)
-              await (db as any).customerTag.delete({ where: { id } });
+              await db.customerTag.delete({ where: { id } });
           } else {
               // Standard Update
-              await (db as any).customerTag.update({ where: { id }, data: { name, tag, description } });
+              await db.customerTag.update({ where: { id }, data: { name, tag, description } });
           }
       } else {
           // CREATE CASE: If exists, return error to merchant instead of silent update
           if (existing) {
               return { error: `The tag "${tag}" already exists in your inventory.` };
           }
-          await (db as any).customerTag.create({ data: { shopId: session.shop, name, tag, description } });
+          await db.customerTag.create({ data: { shopId: session.shop, name, tag, description } });
       }
 
       // 2. GLOBAL RENAME: Update all rule associations to the new tag name
       if (originalTag && tag !== originalTag) {
           await db.$transaction([
-              (db as any).priceList.updateMany({ where: { shopId: session.shop, customerTag: originalTag }, data: { customerTag: tag } }),
-              (db as any).checkoutRule.updateMany({ where: { shopId: session.shop, customerTag: originalTag }, data: { customerTag: tag } }),
-              (db as any).cartDiscount.updateMany({ where: { shopId: session.shop, customerTag: originalTag }, data: { customerTag: tag } }),
+              db.priceList.updateMany({ where: { shopId: session.shop, customerTag: originalTag }, data: { customerTag: tag } }),
+              db.checkoutRule.updateMany({ where: { shopId: session.shop, customerTag: originalTag }, data: { customerTag: tag } }),
+              db.cartDiscount.updateMany({ where: { shopId: session.shop, customerTag: originalTag }, data: { customerTag: tag } }),
+              db.orderLimit.updateMany({ where: { shopId: session.shop, customerTag: originalTag }, data: { customerTag: tag } }),
           ]);
-
-          const form = await (db as any).registrationForm.findFirst({ where: { shopId: session.shop } });
-          if (form?.customerTags) {
-              const tags = form.customerTags.split(",").map((t: string) => t.trim());
-              const index = tags.indexOf(originalTag);
-              if (index !== -1) {
-                  tags[index] = tag;
-                  await (db as any).registrationForm.update({ where: { id: form.id }, data: { customerTags: tags.join(", ") } });
-              }
+          const forms = await db.registrationForm.findMany({ where: { shopId: session.shop } });
+          for (const form of forms) {
+            if (!form.customerTags) continue;
+            const tags = form.customerTags.split(",").map((t: string) => t.trim());
+            if (!tags.includes(originalTag)) continue;
+            const next = tags.map((t) => (t === originalTag ? tag : t));
+            await db.registrationForm.update({ where: { id: form.id }, data: { customerTags: next.join(", ") } });
           }
       }
       return { success: true };
@@ -143,7 +105,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     
     if (actionType === "deleteTag") {
         const id = formData.get("id") as string;
-        await (db as any).customerTag.delete({ where: { id } });
+        await db.customerTag.delete({ where: { id } });
         return { success: true };
     }
   } catch (error: any) {

@@ -5,6 +5,7 @@ import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { checkUsage } from "../utils/quota.server";
+import { getComboboxTagOptions } from "../utils/customer-tags.server";
 import React from "react";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 import { Banner } from "@shopify/polaris";
@@ -12,29 +13,14 @@ import { TagCombobox } from "../components/TagCombobox";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
-  const [rules, usage, cTagRes] = await Promise.all([
+  const [rules, usage, uniqueTags] = await Promise.all([
     db.checkoutRule.findMany({
       where: { shopId: session.shop },
       orderBy: { updatedAt: 'desc' }
     }),
     checkUsage(session.shop),
-    admin.graphql(`#graphql
-      query getCustomerTags {
-        customers(first: 250) { edges { node { tags } } }
-      }
-    `).catch(() => null)
+    getComboboxTagOptions(session.shop)
   ]);
-
-  const shopifyTags = new Set<string>();
-  if (cTagRes) {
-    const cJson: any = await cTagRes.json();
-    cJson?.data?.customers?.edges?.forEach((e: any) =>
-      e.node.tags.forEach((t: string) => shopifyTags.add(t))
-    );
-  }
-  const dbTags = rules.map(r => r.customerTag).filter(Boolean) as string[];
-  const uniqueTags = Array.from(new Set([...dbTags, ...Array.from(shopifyTags)]));
-  if (!uniqueTags.includes("ALL")) uniqueTags.unshift("ALL");
   await ensureExtensionsActivated(admin);
 
   return { rules, usage, uniqueTags };
