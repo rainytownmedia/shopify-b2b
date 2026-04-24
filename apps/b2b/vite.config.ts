@@ -1,6 +1,37 @@
 import { reactRouter } from "@react-router/dev/vite";
-import { defineConfig, type UserConfig } from "vite";
+import { defineConfig, type Plugin, type UserConfig } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
+
+/** Must match storefront app proxy URL prefix (see shopify.app.toml / Partner Dashboard). */
+const SHOPIFY_APP_PROXY_PATH_PREFIX = (
+   process.env.SHOPIFY_APP_PROXY_PATH_PREFIX || "/apps/b2b-proxy"
+).replace(/\/$/, "");
+
+/**
+ * Shopify forwards the full storefront path to the dev server. React Router routes
+ * live at `/registration`, not `/apps/b2b-proxy/registration` — strip the prefix so
+ * SSR and manifest generation match the browser after root.tsx path rewrite.
+ */
+function shopifyAppProxyDevPathRewrite(prefix: string): Plugin {
+   return {
+      name: "shopify-app-proxy-dev-path-rewrite",
+      enforce: "pre",
+      configureServer(server) {
+         server.middlewares.use((req, _res, next) => {
+            const raw = req.url;
+            if (!raw) return next();
+            const q = raw.indexOf("?");
+            const pathOnly = q === -1 ? raw : raw.slice(0, q);
+            const search = q === -1 ? "" : raw.slice(q);
+            if (!pathOnly.startsWith(prefix)) return next();
+            const tail = pathOnly.slice(prefix.length) || "/";
+            const normalized = tail.startsWith("/") ? tail : `/${tail}`;
+            req.url = normalized + search;
+            next();
+         });
+      }
+   };
+}
 
 // Related: https://github.com/remix-run/remix/issues/2835#issuecomment-1144102176
 // Replace the HOST env var with SHOPIFY_APP_URL so that it doesn't break the Vite server.
@@ -39,9 +70,10 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     allowedHosts: [host],
-    cors: {
-      preflightContinue: true,
-    },
+    // App proxy + AppProxyProvider load Vite modules from SHOPIFY_APP_URL while the
+    // document stays on *.myshopify.com — browsers require CORS on those script responses.
+    // preflightContinue alone does not emit Access-Control-Allow-Origin for GETs.
+    cors: true,
     port: Number(process.env.PORT || 3000),
     hmr: host === "localhost" ? hmrConfig : {
       protocol: "wss",
@@ -54,6 +86,7 @@ export default defineConfig({
     },
   },
   plugins: [
+    shopifyAppProxyDevPathRewrite(SHOPIFY_APP_PROXY_PATH_PREFIX),
     reactRouter(),
     tsconfigPaths(),
   ],

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "react-router build",
+    "build": "prisma generate && react-router build",
     "dev": "node ./scripts/dev-runner.mjs",
     "dev:preflight": "node ./scripts/dev-preflight.mjs",
     "dev:shopify": "npx shopify app dev --config shopify.app.toml --store \"$SHOPIFY_DEV_STORE\"",
