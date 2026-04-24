@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "build": "react-router build",
-    "dev": "npx shopify app dev",
+    "dev": "node ./scripts/dev-runner.mjs",
+    "dev:preflight": "node ./scripts/dev-preflight.mjs",
+    "dev:shopify": "npx shopify app dev --config shopify.app.toml --store \"$SHOPIFY_DEV_STORE\"",
     "config:link": "npx shopify app config link",
     "generate": "npx shopify app generate",
     "deploy": "npx shopify app deploy",

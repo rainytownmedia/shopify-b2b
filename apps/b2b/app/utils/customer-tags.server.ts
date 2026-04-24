@@ -1,16 +1,17 @@
 import db from "../db.server";
 
 /**
- * Collect every tag string referenced in B2B app rule tables.
+ * Collect every tag string referenced in B2B app rule tables and registration submissions.
  * Use this to keep the customer_tags table aligned with real config (no per-screen Admin API call).
  */
 export async function collectUsedTagStrings(shopId: string): Promise<Set<string>> {
-  const [priceLists, checkoutRules, cartDiscounts, regForms, orderLimits] = await Promise.all([
+  const [priceLists, checkoutRules, cartDiscounts, regForms, orderLimits, formSubmissions] = await Promise.all([
     db.priceList.findMany({ where: { shopId }, select: { customerTag: true } }),
     db.checkoutRule.findMany({ where: { shopId }, select: { customerTag: true } }),
     db.cartDiscount.findMany({ where: { shopId }, select: { customerTag: true } }),
     db.registrationForm.findMany({ where: { shopId }, select: { customerTags: true } }),
     db.orderLimit.findMany({ where: { shopId }, select: { customerTag: true } }),
+    db.formSubmission.findMany({ where: { shopId }, select: { customerTags: true } }),
   ]);
   const used = new Set<string>();
   for (const p of priceLists) {
@@ -25,6 +26,13 @@ export async function collectUsedTagStrings(shopId: string): Promise<Set<string>
   for (const f of regForms) {
     if (f.customerTags) {
       for (const t of f.customerTags.split(",")) {
+        if (t.trim()) used.add(t.trim());
+      }
+    }
+  }
+  for (const s of formSubmissions) {
+    if (s.customerTags) {
+      for (const t of s.customerTags.split(",")) {
         if (t.trim()) used.add(t.trim());
       }
     }

@@ -25,10 +25,18 @@ shopify app init --template=https://github.com/Shopify/shopify-app-template-reac
 ### Local Development
 
 ```shell
-shopify app dev
+export SHOPIFY_DEV_STORE="your-dev-store.myshopify.com"
+npm run dev
 ```
 
 Press P to open the URL to your app. Once you click install, you can start development.
+
+If your `shopify app dev` startup is intermittent, this project now uses:
+- `scripts/dev-preflight.mjs`: validates Node version, config file and target store before boot.
+- `scripts/dev-runner.mjs`: starts Shopify dev with explicit `--config` and `--store`, with bounded retry for transient `FetchError` on `/app_dev/unstable/graphql.json`.
+
+Recommended runtime:
+- `cd apps/b2b && nvm use` (uses `.nvmrc` pinned to `20.19.0`).
 
 Local development is powered by [the Shopify CLI](https://shopify.dev/docs/apps/tools/cli). It logs into your account, connects to an app, provides environment variables, updates remote config, creates a tunnel and provides commands to generate extensions.
 

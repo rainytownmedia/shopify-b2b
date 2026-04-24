@@ -147,6 +147,8 @@ model FormSubmission {
   formData        String   // JSON string of submitted data
   customerEmail   String
   status          String   @default("pending") // pending, approved, rejected
+  /// Comma-separated tags for this row (per submission). Overrides form default in UI; synced to Shopify when approved.
+  customerTags    String?  @map("submission_customer_tags")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
