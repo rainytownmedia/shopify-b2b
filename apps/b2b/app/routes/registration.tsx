@@ -12,8 +12,44 @@ import { buildRegistrationProxyMarkup } from "../utils/registration-liquid.serve
  * Direct hits (e.g. dev without proxy query) get a minimal `text/html` document with the same markup.
  * @see https://shopify.dev/docs/apps/online-store/app-proxies#liquid-response
  */
-function registrationFormActionUrl(request: Request): string {
+/**
+ * App proxy requests often arrive as `http:` at the app while the shopper uses HTTPS.
+ * A mismatched `http` form action triggers Chrome: "This form is not secure. Autofill has been turned off."
+ */
+function applyStorefrontHttpsOrigin(request: Request, u: URL): void {
+   const h = u.hostname.toLowerCase();
+   if (h === "localhost" || h === "127.0.0.1") return;
+
+   const xfProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+   if (xfProto === "https") {
+      u.protocol = "https:";
+      return;
+   }
+   if (request.headers.get("x-forwarded-ssl") === "on") {
+      u.protocol = "https:";
+      return;
+   }
+   if (h.endsWith(".myshopify.com") || h.endsWith(".shopifypreview.com")) {
+      u.protocol = "https:";
+      return;
+   }
+   /**
+    * `npm run dev` + tunnel: the browser uses `https://*.ngrok…` / `trycloudflare…`, but the app often
+    * receives `request.url` with `http:` — a form `action` left as http triggers Chrome’s insecure-form warning.
+    */
+   if (/\.(ngrok-free\.app|ngrok\.io|ngrok\.app|trycloudflare\.com)$/i.test(h)) {
+      u.protocol = "https:";
+   }
+}
+
+function storefrontRequestUrl(request: Request): URL {
    const u = new URL(request.url);
+   applyStorefrontHttpsOrigin(request, u);
+   return u;
+}
+
+function registrationFormActionUrl(request: Request): string {
+   const u = storefrontRequestUrl(request);
    return `${u.origin}${u.pathname}`;
 }
 
@@ -105,7 +141,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>${form.name.replace(
          /</g,
          ""
-      )}</title></head><body style="margin:0;background:#f6f6f7;font-family:system-ui,sans-serif">${markup}</body></html>`,
+      )}</title></head><body style="margin:0;background:#edeeef;font-family:system-ui,-apple-system,sans-serif">${markup}</body></html>`,
       { status: 200, headers: { "Content-Type": "text/html", "Cache-Control": "private, no-store" } }
    );
 };
@@ -127,7 +163,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
    }
 
    const redirectBack = () => {
-      const u = new URL(request.url);
+      const u = storefrontRequestUrl(request);
       u.searchParams.delete("thank_you");
       u.searchParams.delete("error");
       return u;

@@ -1,9 +1,14 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "266c3147bebdc8b120fca5398ceae893"
-name = "Rainytownmedia B2B1"
+client_id = "0f710528d2a966abbfb5418deb97bffc"
+name = "Rainytownmedia INFO B2B"
 application_url = "https://example.com"
 embedded = true
+
+[app_proxy]
+url = "https://sb2b.rainytownmedia.com"
+subpath = "b2b"
+prefix = "apps"
 
 [build]
 automatically_update_urls_on_dev = true

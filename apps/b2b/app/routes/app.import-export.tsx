@@ -1,24 +1,66 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { useState, useCallback, useEffect } from "react";
-import { useLoaderData, useSubmit, useActionData, useNavigation } from "react-router";
-import { Page, Layout, Card, Text, BlockStack, InlineStack, Button, Box, Select, List, Icon, DropZone, Banner } from "@shopify/polaris";
-import { NoteIcon } from '@shopify/polaris-icons';
+import { useSubmit, useActionData, useNavigation, useLoaderData } from "react-router";
+import { Page, Layout, Card, Text, BlockStack, InlineStack, Button, Box, Select, List, Icon, DropZone, DataTable, Tabs } from "@shopify/polaris";
+import { NoteIcon, ExportIcon } from '@shopify/polaris-icons';
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
+import { logActivity } from "../utils/logger.server";
+import type { ImportExportLog } from "@prisma/client";
+
+type ImportExportLogDelegate = {
+  findMany: (args: unknown) => Promise<ImportExportLog[]>;
+  create: (args: unknown) => Promise<ImportExportLog>;
+};
+
+function getImportExportLogDelegate(dbClient: unknown): ImportExportLogDelegate | null {
+  const d = dbClient as { importExportLog?: unknown };
+  const delegate = d?.importExportLog as Partial<ImportExportLogDelegate> | undefined;
+  if (typeof delegate?.findMany === "function" && typeof delegate?.create === "function") {
+    return delegate as ImportExportLogDelegate;
+  }
+  return null;
+}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-  return null;
+  const { session } = await authenticate.admin(request);
+
+  const logDelegate = getImportExportLogDelegate(db);
+  if (!logDelegate) {
+    // Likely dev server running with old Prisma Client; avoid crashing the page.
+    return { importLogs: [], exportLogs: [] };
+  }
+
+  const [importLogs, exportLogs] = await Promise.all([
+    logDelegate.findMany({
+      where: { shopId: session.shop, type: "IMPORT" },
+      orderBy: { createdAt: "desc" },
+      take: 30,
+    }),
+    logDelegate.findMany({
+      where: { shopId: session.shop, type: "EXPORT" },
+      orderBy: { createdAt: "desc" },
+      take: 30,
+    }),
+  ]);
+
+  return { importLogs, exportLogs };
 };
 
 import db from "../db.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
+  const startedAt = Date.now();
   const { session } = await authenticate.admin(request);
   const formData = await request.formData();
   
   const file = formData.get("file") as File;
   const dataType = formData.get("dataType") as string;
+  const actionType = (formData.get("actionType") as string) || "import";
+
+  if (actionType !== "import") {
+    return { error: "Unsupported action" };
+  }
 
   if (!file) {
     return { error: "No file provided" };
@@ -28,7 +70,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const text = await file.text();
     // Basic CSV parser (assuming no quotes/commas inside values for simplicity right now)
     const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0);
-    const headers = lines[0].split(",");
+    // const headers = lines[0].split(","); // reserved for future validation
     
     let processedCount = 0;
 
@@ -41,7 +83,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
          const cols = lines[i].split(",");
          if (cols.length < 7) continue;
          
-         const [handle, variantId, sku, tag, minQtyStr, discountType, valStr] = cols;
+         const [, variantId, , tag, minQtyStr, discountType, valStr] = cols;
          const minQty = parseInt(minQtyStr, 10);
          const val = parseFloat(valStr);
 
@@ -73,7 +115,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
          if (!productId) continue; // Skip if we still couldn't find the product ID
 
          // Ensure PriceList exists
-         let listName = `Tier List - ${tag}`;
+        const listName = `Tier List - ${tag}`;
          let priceList = await db.priceList.findFirst({
            where: { shopId: session.shop, customerTag: tag, category: "TIER" }
          });
@@ -103,7 +145,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
          const cols = lines[i].split(",");
          if (cols.length < 6) continue;
          
-         const [productId, handle, tag, minQtyStr, discountType, valStr] = cols;
+         const [productId, , tag, minQtyStr, discountType, valStr] = cols;
          const minQty = parseInt(minQtyStr, 10);
          const val = parseFloat(valStr);
 
@@ -132,13 +174,72 @@ export const action = async ({ request }: ActionFunctionArgs) => {
        }
     }
 
+    const logDelegate = getImportExportLogDelegate(db);
+    if (logDelegate) {
+      await logDelegate.create({
+        data: {
+          shopId: session.shop,
+          type: "IMPORT",
+          dataType: String(dataType),
+          status: "SUCCESS",
+          filename: file?.name || "import.csv",
+          mimeType: file?.type || "text/csv",
+          rowCount: processedCount,
+          content: text,
+        },
+      });
+    }
+
+    await logActivity({
+      shopId: session.shop,
+      action: `IMPORT_${String(dataType).toUpperCase()}`,
+      method: "POST",
+      path: new URL(request.url).pathname,
+      statusCode: 200,
+      requestData: { dataType, filename: file?.name },
+      responseData: { processedCount },
+      duration: Date.now() - startedAt,
+    });
+
     return { success: true, count: processedCount };
-  } catch (error: any) {
-    return { error: error.message || "Failed to parse CSV" };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Failed to parse CSV";
+    try {
+      const logDelegate = getImportExportLogDelegate(db);
+      if (logDelegate) {
+        await logDelegate.create({
+          data: {
+            shopId: session.shop,
+            type: "IMPORT",
+            dataType: String(dataType),
+            status: "FAILED",
+            filename: file?.name || "import.csv",
+            mimeType: file?.type || "text/csv",
+            rowCount: 0,
+            error: message,
+            content: "",
+          },
+        });
+      }
+    } catch {
+      // ignore logging failures
+    }
+    await logActivity({
+      shopId: session.shop,
+      action: `IMPORT_${String(dataType).toUpperCase()}`,
+      method: "POST",
+      path: new URL(request.url).pathname,
+      statusCode: 500,
+      requestData: { dataType, filename: file?.name },
+      responseData: { error: message },
+      duration: Date.now() - startedAt,
+    });
+    return { error: message };
   }
 };
 
 export default function ImportExport() {
+  const { importLogs, exportLogs } = useLoaderData<typeof loader>();
   const shopify = useAppBridge();
   const submit = useSubmit();
   const actionData = useActionData<typeof action>();
@@ -149,6 +250,8 @@ export default function ImportExport() {
   const [importType, setImportType] = useState('tier_pricing_variant');
   const [exportType, setExportType] = useState('tier_pricing_variant');
   const [file, setFile] = useState<File | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [historyTabIndex, setHistoryTabIndex] = useState(0);
 
   useEffect(() => {
     if (actionData) {
@@ -170,7 +273,7 @@ export default function ImportExport() {
   const handleExportTypeChange = useCallback((value: string) => setExportType(value), []);
 
   const handleDropZoneDrop = useCallback(
-    (_dropFiles: File[], acceptedFiles: File[], _rejectedFiles: File[]) => {
+    (_dropFiles: File[], acceptedFiles: File[]) => {
       if (acceptedFiles.length > 0) setFile(acceptedFiles[0]);
     },
     [],
@@ -185,6 +288,83 @@ export default function ImportExport() {
     
     // Using multipart/form-data to strictly handle file uploads
     submit(formData, { method: "post", encType: "multipart/form-data" });
+  };
+
+  const downloadLogFile = async (logId: string) => {
+    try {
+      const downloadUrl = `/api/import-export-logs/${encodeURIComponent(logId)}/download`;
+      const res = await fetch(downloadUrl, {
+        method: "GET",
+        credentials: "same-origin",
+      });
+
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "");
+        throw new Error(msg || `Download failed (${res.status})`);
+      }
+
+      const blob = await res.blob();
+      const disposition = res.headers.get("content-disposition") || "";
+      const match = disposition.match(/filename="([^"]+)"/i);
+      const filename = match?.[1] || "export.csv";
+
+      const link = document.createElement("a");
+      const objectUrl = URL.createObjectURL(blob);
+      link.href = objectUrl;
+      link.download = filename;
+      link.style.visibility = "hidden";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Unknown error";
+      shopify.toast.show(`Download error: ${message}`, { isError: true });
+    }
+  };
+
+  const handleExport = async () => {
+    setIsExporting(true);
+    try {
+      const exportUrl = `/api/export-tier-pricing?dataType=${encodeURIComponent(exportType)}`;
+      const res = await fetch(exportUrl, {
+        method: "GET",
+        headers: { Accept: "text/csv" },
+        credentials: "same-origin",
+      });
+
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "");
+        throw new Error(msg || `Export failed (${res.status})`);
+      }
+
+      const blob = await res.blob();
+
+      const disposition = res.headers.get("content-disposition") || "";
+      const match = disposition.match(/filename="([^"]+)"/i);
+      const filename =
+        match?.[1] ||
+        (exportType === "tier_pricing_variant"
+          ? "tier_pricing_variants.csv"
+          : "tier_pricing_products.csv");
+
+      const link = document.createElement("a");
+      const objectUrl = URL.createObjectURL(blob);
+      link.href = objectUrl;
+      link.download = filename;
+      link.style.visibility = "hidden";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+
+      shopify.toast.show("Export started");
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Unknown error";
+      shopify.toast.show(`Export error: ${message}`, { isError: true });
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const downloadTemplate = (type: string) => {
@@ -274,7 +454,14 @@ export default function ImportExport() {
               />
 
               <Box paddingBlockStart="200">
-                <Button fullWidth variant="secondary" icon="export">
+                <Button
+                  fullWidth
+                  variant="secondary"
+                  icon={ExportIcon}
+                  onClick={handleExport}
+                  loading={isExporting}
+                  disabled={isExporting}
+                >
                   Export CSV
                 </Button>
               </Box>
@@ -301,6 +488,65 @@ export default function ImportExport() {
                     </div>
                 </BlockStack>
            </Card>
+        </Layout.Section>
+
+        <Layout.Section>
+          <Card>
+            <BlockStack gap="400">
+              <div>
+                <Text as="h2" variant="headingMd">History</Text>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Recent imports and exports for this shop.
+                </Text>
+              </div>
+
+              <Tabs
+                tabs={[{ id: "import", content: "Import" }, { id: "export", content: "Export" }]}
+                selected={historyTabIndex}
+                onSelect={setHistoryTabIndex}
+              >
+                <Box paddingBlockStart="300">
+                  {historyTabIndex === 0 ? (
+                    <DataTable
+                      columnContentTypes={["text", "text", "numeric", "text", "text", "text"]}
+                      headings={["File", "Data type", "Rows", "Status", "Time", "Download"]}
+                      rows={(importLogs || []).map((h: ImportExportLog) => {
+                        const time = h.createdAt ? new Date(h.createdAt).toLocaleString() : "";
+                        return [
+                          String(h.filename || ""),
+                          String(h.dataType || ""),
+                          h.rowCount ?? "",
+                          h.status || "",
+                          time,
+                          <Button key={h.id} variant="plain" onClick={() => downloadLogFile(h.id)}>
+                            Download
+                          </Button>,
+                        ];
+                      })}
+                    />
+                  ) : (
+                    <DataTable
+                      columnContentTypes={["text", "text", "numeric", "text", "text", "text"]}
+                      headings={["File", "Data type", "Rows", "Status", "Time", "Download"]}
+                      rows={(exportLogs || []).map((h: ImportExportLog) => {
+                        const time = h.createdAt ? new Date(h.createdAt).toLocaleString() : "";
+                        return [
+                          String(h.filename || ""),
+                          String(h.dataType || ""),
+                          h.rowCount ?? "",
+                          h.status || "",
+                          time,
+                          <Button key={h.id} variant="plain" onClick={() => downloadLogFile(h.id)}>
+                            Download
+                          </Button>,
+                        ];
+                      })}
+                    />
+                  )}
+                </Box>
+              </Tabs>
+            </BlockStack>
+          </Card>
         </Layout.Section>
       </Layout>
     </Page>

@@ -249,6 +249,23 @@ model ActivityLog {
   @@map("activity_log")
 }
 
+model ImportExportLog {
+  id        String   @id @default(cuid())
+  shopId    String   @map("shop_id")
+  type      String   // "IMPORT" | "EXPORT"
+  dataType  String   @map("data_type") // tier_pricing_variant, tier_pricing_product, ...
+  status    String   @default("SUCCESS") // SUCCESS | FAILED
+  filename  String
+  mimeType  String   @default("text/csv") @map("mime_type")
+  rowCount  Int?     @map("row_count")
+  error     String?  @db.Text
+  content   String   @db.Text // CSV content (for download)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([shopId, type, createdAt])
+  @@map("import_export_logs")
+}
+
 model AuditLog {
   id        String   @id @default(cuid())
   adminId   String
