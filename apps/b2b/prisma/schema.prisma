@@ -6,8 +6,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 model Session {
@@ -164,6 +165,49 @@ model EmailTemplate {
   updatedAt   DateTime @updatedAt
 
   @@unique([shopId, type])
+}
+
+model EmailJob {
+  id            String   @id @default(cuid())
+  shopId         String
+  type           String
+  to             String
+  data           Json
+  status         String   @default("PENDING") // PENDING, PROCESSING, SENT, FAILED
+  attempts       Int      @default(0)
+  maxAttempts    Int      @default(5)
+  nextAttemptAt  DateTime @default(now())
+  provider       String?
+  providerMsgId  String?
+  lastError      String?  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  logs           EmailLog[]
+
+  @@index([status, nextAttemptAt])
+  @@index([shopId, createdAt])
+  @@map("email_jobs")
+}
+
+model EmailLog {
+  id            String   @id @default(cuid())
+  jobId          String?
+  shopId         String
+  type           String
+  to             String
+  provider       String?
+  providerMsgId  String?
+  status         String   // QUEUED, SENT, FAILED
+  error          String?  @db.Text
+  attempts       Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  job            EmailJob? @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@index([shopId, createdAt])
+  @@index([status, createdAt])
+  @@map("email_logs")
 }
 
 model QuickOrderForm {

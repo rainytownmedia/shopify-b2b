@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useSearchParams, useNavigation } from "react-router";
+import { useFetcher, useLoaderData, useSearchParams, useNavigation, useNavigate } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
@@ -486,6 +486,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                where: { id: submission.id },
                data: { status: nextStatus, customerTags: tagSource } as any
             });
+            try {
+               const payload = parseSubmissionPayload(submission.formData);
+               const store = await db.shop.findUnique({ where: { id: session.shop } });
+               const emailData = {
+                  customerFirstName: getPayloadValue(payload, ["first_name", "firstName", "fst", "fname"]) || "",
+                  customerLastName: getPayloadValue(payload, ["last_name", "lastName", "lst", "lname"]) || "",
+                  customerEmail: submission.customerEmail || "",
+                  shopName: store?.name || session.shop,
+                  customerStatus: "Approved"
+               };
+
+               const { sendEmailTemplate } = await import("../services/mailer.server");
+               if (submission.customerEmail) {
+                  void sendEmailTemplate({
+                     shopId: session.shop,
+                     type: "CUSTOMER_APPROVED",
+                     to: submission.customerEmail,
+                     data: emailData
+                  });
+               }
+            } catch (emailError) {
+               console.error("Failed to send CUSTOMER_APPROVED email", emailError);
+            }
             continue;
          }
 
@@ -564,6 +587,7 @@ export default function CustomerManagementPage() {
    const { customers, priceLists, registrationForms, formSubmissions, uniqueTags, searchTerm, shopId } = useLoaderData<typeof loader>();
    const [searchParams, setSearchParams] = useSearchParams();
    const fetcher = useFetcher();
+   const navigate = useNavigate();
    const shopify = useAppBridge();
 
    const [search, setSearch] = useState(searchTerm);
@@ -610,7 +634,7 @@ export default function CustomerManagementPage() {
                      <strong>📧 Email Setup</strong>
                      <p style={{ fontSize: "0.85em", color: "#666" }}>Configure automated emails for B2B status.</p>
                      <s-button variant="secondary" onClick={() => {
-                        window.location.href = "/app/email-setup";
+                        navigate("/app/email-setup");
                      }}>Setup Emails</s-button>
                   </div>
                </div>
